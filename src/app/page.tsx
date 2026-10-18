@@ -5,7 +5,11 @@ import { MAX_GUEST_NAME_LENGTH } from "@/party-camera";
 import { currentGuest } from "@/server/guest-session";
 import { partyCamera } from "@/server/party-camera";
 import { JoinForm } from "./join-form";
+import { partyMetadata } from "./party-metadata";
 import { Splash } from "./splash";
+import { StandaloneJoinNote } from "./standalone-join-note";
+
+export const generateMetadata = partyMetadata;
 
 export default function JoinPage() {
   return (
@@ -30,7 +34,7 @@ async function JoinScreen() {
   return (
     <main
       style={{ "--accent": settings.accentColor } as CSSProperties}
-      className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-8 px-6 py-10"
+      className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-8 px-6 pt-[max(2.5rem,env(safe-area-inset-top))] pb-[max(2.5rem,env(safe-area-inset-bottom))]"
     >
       <header className="flex flex-col gap-3">
         <span className="text-sm font-semibold uppercase tracking-[0.2em] text-accent">
@@ -52,6 +56,8 @@ async function JoinScreen() {
           </li>
         ))}
       </ol>
+
+      <StandaloneJoinNote />
 
       <JoinForm maxLength={MAX_GUEST_NAME_LENGTH} />
 

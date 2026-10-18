@@ -1,7 +1,7 @@
 "use server";
 
 import { headers } from "next/headers";
-import { refresh } from "next/cache";
+import { refresh, updateTag } from "next/cache";
 import { redirect } from "next/navigation";
 import {
   InvalidSettingsError,
@@ -15,6 +15,7 @@ import {
   startAdminSession,
 } from "@/server/admin-session";
 import { ADMIN_LOGIN_PATH, requireHost } from "@/server/host";
+import { PARTY_METADATA_TAG } from "../party-metadata";
 import { fromPartyLocalInput } from "../party-time";
 import {
   loginLockout,
@@ -167,6 +168,8 @@ export async function updateSettingsAction(
         expectedVersion: /^\d{1,9}$/.test(version) ? Number(version) : Number.NaN,
       },
     );
+    // The guest pages' cached metadata carries the party title.
+    updateTag(PARTY_METADATA_TAG);
     refresh();
     return { submissions, saved: true };
   } catch (error) {
