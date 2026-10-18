@@ -9,6 +9,14 @@ function required(name: string): string {
   return value;
 }
 
+/**
+ * Whether the Supabase variables are set. False only in a build without them:
+ * the build then prerenders with default settings instead of failing.
+ */
+export function isSupabaseConfigured(): boolean {
+  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+}
+
 export const serverEnv = {
   get supabaseUrl() {
     return required("SUPABASE_URL");

@@ -1,6 +1,7 @@
 import { Suspense, type CSSProperties } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { connection } from "next/server";
 import { currentGuest } from "@/server/guest-session";
 import { partyCamera } from "@/server/party-camera";
 import { formatPartyMoment } from "../party-time";
@@ -29,6 +30,7 @@ export default function GalleryPage({ searchParams }: PageProps<"/galerij">) {
 }
 
 async function GalleryScreen({ searchParams }: Pick<PageProps<"/galerij">, "searchParams">) {
+  await connection();
   const camera = partyCamera();
   const [settings, reveal, guest, params] = await Promise.all([
     camera.getSettings(),
