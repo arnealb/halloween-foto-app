@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import { PartyCameraError } from "./errors";
+import { watermarkOverlay, type WatermarkSpec } from "./watermark";
 
 /**
  * Largest upload accepted for one Shot. Clients compress to a long side of
@@ -96,17 +97,31 @@ const DERIVED: Record<DerivedVariant, { longSide: number; quality: number }> = {
 
 /**
  * Render a derived variant of a stored original (already oriented and
- * stripped): scaled to fit the variant's long side, never enlarged,
- * re-encoded as JPEG. This is where the watermark will be composited.
+ * stripped): scaled to fit the variant's long side, never enlarged, with the
+ * watermark composited in when one is given, re-encoded as JPEG. The one
+ * render function for the Galerij, the Host's clean thumbnails and the
+ * watermark preview. The original itself is only read.
  */
 export async function renderDerived(
   original: Uint8Array,
   variant: DerivedVariant,
+  watermark: WatermarkSpec | null = null,
 ): Promise<Uint8Array> {
   const { longSide, quality } = DERIVED[variant];
-  const data = await sharp(original, { limitInputPixels: MAX_INPUT_PIXELS })
-    .resize({ width: longSide, height: longSide, fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality, mozjpeg: true })
-    .toBuffer();
-  return new Uint8Array(data);
+  const resized = sharp(original, { limitInputPixels: MAX_INPUT_PIXELS }).resize({
+    width: longSide,
+    height: longSide,
+    fit: "inside",
+    withoutEnlargement: true,
+  });
+  if (!watermark) {
+    return new Uint8Array(await resized.jpeg({ quality, mozjpeg: true }).toBuffer());
+  }
+  // The overlay is laid out on the final size, so resize first.
+  const { data, info } = await resized.raw().toBuffer({ resolveWithObject: true });
+  const raw = { raw: { width: info.width, height: info.height, channels: info.channels } };
+  const overlay = await watermarkOverlay(watermark, info.width, info.height);
+  const image = sharp(data, raw);
+  if (overlay) image.composite([{ input: overlay.svg, left: overlay.left, top: overlay.top }]);
+  return new Uint8Array(await image.jpeg({ quality, mozjpeg: true }).toBuffer());
 }

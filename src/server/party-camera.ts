@@ -25,6 +25,8 @@ type HostOperation =
   | "deletePhoto"
   | "renameGuest"
   | "setRevealOverride"
+  | "previewWatermark"
+  | "prepareGallery"
   | "renderPhoto";
 
 /**

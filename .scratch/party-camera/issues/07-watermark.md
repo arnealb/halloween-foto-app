@@ -4,11 +4,11 @@
 
 **Blocked by:** 06 (Reveal & galerij)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Watermark-instellingen in `updateSettings`: enabled, text, logo (opgeslagen in de blob store), position (4 hoeken), scale en opacity
-- [ ] Het watermark wordt met sharp (SVG-tekst + logo-compositing) toegepast op `thumb` en `display` voor gasten. Het origineel blijft byte-identiek.
-- [ ] `previewWatermark(draft, sampleBytes?)` gebruikt exact dezelfde renderfunctie
-- [ ] Tests: met het watermark aan verschilt de afgeleide van een render zonder watermark. Het origineel is onveranderd. Een settings-wijziging levert een nieuwe afgeleide op (cache-invalidatie via de settings-versie). Met het watermark uit is er geen overlay.
-- [ ] Admin-UI: tekstveld, logo-upload/verwijderen, hoekkiezer, schuifjes voor grootte en transparantie, de toggle en een live voorbeeld
-- [ ] Handmatig geverifieerd: het watermark instellen → zichtbaar in de galerij. Wijzigen → de galerij toont de nieuwe versie.
+- [x] Watermark-instellingen in `updateSettings`: enabled, text, logo (opgeslagen in de blob store), position (4 hoeken), scale en opacity
+- [x] Het watermark wordt met sharp (SVG-tekst + logo-compositing) toegepast op `thumb` en `display` voor gasten. Het origineel blijft byte-identiek.
+- [x] `previewWatermark(draft, sampleBytes?)` gebruikt exact dezelfde renderfunctie
+- [x] Tests: met het watermark aan verschilt de afgeleide van een render zonder watermark. Het origineel is onveranderd. Een settings-wijziging levert een nieuwe afgeleide op (cache-invalidatie via de settings-versie). Met het watermark uit is er geen overlay.
+- [x] Admin-UI: tekstveld, logo-upload/verwijderen, hoekkiezer, schuifjes voor grootte en transparantie, de toggle en een live voorbeeld
+- [x] Handmatig geverifieerd: het watermark instellen → zichtbaar in de galerij. Wijzigen → de galerij toont de nieuwe versie.

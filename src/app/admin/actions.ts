@@ -289,6 +289,56 @@ export async function updateRevealAtAction(
   }
 }
 
+export interface PrepareGalleryState {
+  /** Batches run so far in this run. */
+  batches: number;
+  photos: number;
+  rendered: number;
+  removed: number;
+  failed: number;
+  /** Where the next batch starts; null when done (or not started). */
+  nextCursor: string | null;
+  done: boolean;
+  error?: string;
+}
+
+/**
+ * "Galerij voorbereiden": one batch per call (the client calls again with
+ * `cursor` until done; without JavaScript, each press does one batch).
+ * Form fields: `cursor` (empty for a fresh run).
+ */
+export async function prepareGalleryAction(
+  previous: PrepareGalleryState,
+  formData: FormData,
+): Promise<PrepareGalleryState> {
+  const camera = await requireHost();
+  const cursor = String(formData.get("cursor") ?? "");
+  const base =
+    cursor && previous && !previous.done
+      ? previous
+      : { batches: 0, photos: 0, rendered: 0, removed: 0, failed: 0 };
+  try {
+    const batch = await camera.prepareGallery({ cursor: cursor || undefined });
+    return {
+      batches: base.batches + 1,
+      photos: base.photos + batch.photos,
+      rendered: base.rendered + batch.rendered,
+      removed: base.removed + batch.removed,
+      failed: base.failed + batch.failed,
+      nextCursor: batch.nextCursor,
+      done: batch.nextCursor === null,
+    };
+  } catch (error) {
+    console.error("prepareGalleryAction failed", error);
+    return {
+      ...base,
+      nextCursor: cursor || null,
+      done: false,
+      error: "Er ging iets mis. Probeer het opnieuw; wat al klaar is, blijft klaar.",
+    };
+  }
+}
+
 async function photoAction(run: () => Promise<void>): Promise<PhotoActionResult> {
   try {
     await run();

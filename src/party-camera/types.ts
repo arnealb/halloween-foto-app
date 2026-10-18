@@ -138,7 +138,8 @@ export interface EventSettings {
 
 /**
  * What the Host may change with `updateSettings`. Absent fields stay as they
- * are. Reveal and watermark fields join here with their features.
+ * are. The logo is given as bytes (`watermarkLogo`: an uploaded PNG/WebP, or
+ * null to remove it); PartyCamera stores it and sets `watermarkLogoKey`.
  */
 export type SettingsUpdate = Partial<
   Pick<
@@ -150,8 +151,15 @@ export type SettingsUpdate = Partial<
     | "captureOpen"
     | "revealAt"
     | "revealOverride"
+    | "watermarkEnabled"
+    | "watermarkText"
+    | "watermarkPosition"
+    | "watermarkScale"
+    | "watermarkOpacity"
   >
->;
+> & {
+  watermarkLogo?: Uint8Array | null;
+};
 
 /** Validated settings values for {@link Repository.updateSettings}. */
 export type SettingsChanges = Partial<Omit<EventSettings, "settingsVersion">>;

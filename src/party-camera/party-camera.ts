@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { InvalidSettingsError, PartyCameraError } from "./errors";
-import { normalizeShot, renderDerived, type DerivedVariant } from "./image";
+import sharp from "sharp";
+import { InvalidSettingsError, PartyCameraError, type SettingsFieldErrors } from "./errors";
+import { DISPLAY_LONG_SIDE, normalizeShot, renderDerived, type DerivedVariant } from "./image";
 import { revealStateOf, type RevealState } from "./reveal";
 import { effectiveChanges, validateSettingsUpdate } from "./settings";
+import { normalizeWatermarkLogo, type WatermarkSpec } from "./watermark";
 import type {
   BlobStore,
   Clock,
@@ -153,8 +155,15 @@ export interface PartyCamera {
    * at most {@link MAX_TITLE_LENGTH} characters), welcome text (may be empty,
    * at most {@link MAX_WELCOME_TEXT_LENGTH}), accent color (exactly
    * `#rrggbb`, stored lowercase), `shotsPerGuest` (whole number 1 to
-   * {@link MAX_SHOTS_PER_GUEST}; applies to every Rolletje at once) and
-   * `captureOpen`. Absent fields stay as they are. A change bumps
+   * {@link MAX_SHOTS_PER_GUEST}; applies to every Rolletje at once),
+   * `captureOpen`, the Reveal fields and the Watermark: `watermarkEnabled`,
+   * `watermarkText` (one line, at most {@link MAX_WATERMARK_TEXT_LENGTH}
+   * characters), `watermarkPosition` (a corner), `watermarkScale` (width
+   * relative to the photo, 0.05 to 0.6), `watermarkOpacity` (0.1 to 1) and
+   * `watermarkLogo`: an uploaded PNG/WebP (at most 2 MB, validated, scaled
+   * down and stored once under `watermark/<hash>.png`) or null to remove the
+   * logo. Stored logos are kept (they are small), never garbage-collected.
+   * Absent fields stay as they are. A change bumps
    * `settingsVersion` (derived-image caches key on it); an update that
    * changes nothing writes nothing and keeps the version.
    *
@@ -216,6 +225,73 @@ export interface PartyCamera {
    * @throws InvalidSettingsError for any other value.
    */
   setRevealOverride(override: RevealOverride): Promise<RevealState>;
+
+  /**
+   * What the Galerij's `display` image looks like with a draft of the
+   * watermark settings, without saving anything. Fields absent from `draft`
+   * are taken from the saved settings (`watermarkLogo` absent: the saved
+   * logo; null: no logo). Rendered with exactly the function the Galerij
+   * uses, on `sampleBytes` (a photo, normalized like a Shot) if given, else
+   * on the first photo of the party (hidden ones excepted), else on a
+   * generated sample image. Validated like {@link updateSettings}.
+   * @throws InvalidSettingsError for invalid draft fields.
+   * One preview renders at a time per process; a request overtaken by a newer
+   * one while waiting is dropped (a draft logo is decoded once, then reused).
+   * @throws PartyCameraError `InvalidImage` for unreadable `sampleBytes`.
+   * @throws PartyCameraError `PreviewSuperseded` when a newer preview came in.
+   */
+  previewWatermark(draft: WatermarkDraft, sampleBytes?: Uint8Array): Promise<WatermarkPreview>;
+
+  /**
+   * "Galerij voorbereiden": render and cache `thumb` and `display` with the
+   * current watermark for one batch of the photos in the Galerij (hidden
+   * ones excepted), oldest first, so the Galerij does not render on demand
+   * after a watermark change. Derived images of an earlier watermark are
+   * removed on the way. Already prepared images are left alone, so running
+   * it again is cheap and safe. Call again with `nextCursor` until it is
+   * null; each call does at most `limit` photos (default
+   * {@link PREPARE_GALLERY_BATCH_SIZE}), a few at a time, so one call stays
+   * well within a serverless time limit.
+   */
+  prepareGallery(options?: { cursor?: string; limit?: number }): Promise<GalleryPreparation>;
+}
+
+/** Watermark fields to preview (see {@link PartyCamera.previewWatermark}). */
+export type WatermarkDraft = Pick<
+  SettingsUpdate,
+  | "watermarkEnabled"
+  | "watermarkText"
+  | "watermarkPosition"
+  | "watermarkScale"
+  | "watermarkOpacity"
+  | "watermarkLogo"
+>;
+
+/** Result of {@link PartyCamera.previewWatermark}. */
+export interface WatermarkPreview extends RenderedPhoto {
+  /** What the watermark was drawn on. */
+  sample: "upload" | "photo" | "generated";
+}
+
+/** Photos per {@link PartyCamera.prepareGallery} call when no `limit` is given. */
+export const PREPARE_GALLERY_BATCH_SIZE = 12;
+/** Most photos one {@link PartyCamera.prepareGallery} call does. */
+export const MAX_PREPARE_GALLERY_BATCH_SIZE = 50;
+/** Photos rendered at the same time within one batch. */
+const PREPARE_CONCURRENCY = 3;
+
+/** Result of one {@link PartyCamera.prepareGallery} call. */
+export interface GalleryPreparation {
+  /** Photos looked at in this batch. */
+  photos: number;
+  /** Derived images rendered (the rest were already prepared). */
+  rendered: number;
+  /** Derived images of an earlier watermark removed. */
+  removed: number;
+  /** Photos that could not be prepared (logged; they render on demand). */
+  failed: number;
+  /** Pass as `cursor` for the next batch; null when this was the last. */
+  nextCursor: string | null;
 }
 
 /** A size/kind of photo bytes that {@link PartyCamera.renderPhoto} serves. */
@@ -315,8 +391,40 @@ function derivedKey(photoId: string, variant: DerivedVariant, renderKey: string)
   return `${derivedFolder(photoId)}/${variant}-${renderKey}.jpg`;
 }
 
-/** Render key of what the Host sees: always the clean photo. */
-const HOST_RENDER_KEY = "plain";
+/** How a derived image is rendered: its cache key and the watermark, if any. */
+interface Look {
+  key: string;
+  watermark: WatermarkSettings | null;
+}
+
+type WatermarkSettings = Pick<
+  EventSettings,
+  | "watermarkEnabled"
+  | "watermarkText"
+  | "watermarkLogoKey"
+  | "watermarkPosition"
+  | "watermarkScale"
+  | "watermarkOpacity"
+>;
+
+/** What the Host sees, and the Galerij without a watermark: the clean photo. */
+const PLAIN: Look = { key: "plain", watermark: null };
+
+/** How the Galerij's images look with these settings. */
+function galleryLook(settings: WatermarkSettings): Look {
+  const key = galleryRenderKey(settings);
+  return key === PLAIN.key ? PLAIN : { key, watermark: settings };
+}
+
+/**
+ * Version of how a watermark is drawn (font, layout, outline, shadow). Part of
+ * the render key: bump it whenever the drawing changes, so cached images of
+ * the old drawing are not served any more.
+ */
+const WATERMARK_RENDER_VERSION = 1;
+
+/** Derived images of a watermark: `<variant>-wm-<hash>.jpg`. */
+const WATERMARKED_KEY_RE = /\/(?:thumb|display)-(wm-[0-9a-f]{12})\.jpg$/;
 
 /**
  * Render key of the Galerij's derived images, from the settings they are
@@ -330,21 +438,16 @@ const HOST_RENDER_KEY = "plain";
  * THE SEAM FOR THE WATERMARK (ticket 07): render with the overlay whenever
  * this key is not `plain`.
  */
-function galleryRenderKey(
-  settings: Partial<
-    Pick<
-      EventSettings,
-      | "watermarkEnabled"
-      | "watermarkText"
-      | "watermarkLogoKey"
-      | "watermarkPosition"
-      | "watermarkScale"
-      | "watermarkOpacity"
-    >
-  >,
-): string {
-  if (settings.watermarkEnabled !== true) return "plain";
+function galleryRenderKey(settings: WatermarkSettings): string {
+  // On, but nothing to draw (no text, no logo): the clean photo too.
+  if (
+    settings.watermarkEnabled !== true ||
+    (!settings.watermarkText?.trim() && !settings.watermarkLogoKey)
+  ) {
+    return PLAIN.key;
+  }
   const fields = JSON.stringify([
+    WATERMARK_RENDER_VERSION,
     settings.watermarkText ?? null,
     settings.watermarkLogoKey ?? null,
     settings.watermarkPosition ?? null,
@@ -371,6 +474,15 @@ class DefaultPartyCamera implements PartyCamera {
   private readonly newId: () => string;
   /** Derived images being rendered right now, by blob key (see renderDerivedPhoto). */
   private readonly rendering = new Map<string, Promise<RenderedPhoto>>();
+  /** Watermark logos by blob key (content-addressed, so never stale). */
+  private readonly logos = new Map<string, Uint8Array>();
+  /** The original last used as preview sample. */
+  private previewSample: { storageKey: string; bytes: Uint8Array } | null = null;
+  /** Draft logos of recent previews, normalized, by SHA-256 of the uploaded bytes. */
+  private readonly draftLogos = new Map<string, ReturnType<typeof normalizeWatermarkLogo>>();
+  /** Newest preview request, and the end of the preview render queue. */
+  private previewTicket = 0;
+  private previewTurn: Promise<void> = Promise.resolve();
 
   constructor(deps: PartyCameraDeps) {
     this.repository = deps.repository;
@@ -546,10 +658,18 @@ class DefaultPartyCamera implements PartyCamera {
     update: SettingsUpdate,
     options: { expectedVersion?: number } = {},
   ): Promise<EventSettings> {
-    const changes = validateSettingsUpdate(update ?? {});
+    const { watermarkLogo, ...fields } = update ?? {};
+    const { changes, logo } = await validateWithLogo(fields, watermarkLogo);
     const { expectedVersion } = options;
     if (expectedVersion !== undefined && !Number.isInteger(expectedVersion)) {
       throw settingsChanged();
+    }
+    // The logo is stored first, so the settings never name a missing blob.
+    // Logos are never deleted again: they are small (at most 800px), and a
+    // content-addressed key may be named again by another save at any time.
+    if (logo) {
+      await this.blobStore.put(logo.key, logo.bytes, "image/png");
+      this.cacheLogo(logo.key, logo.bytes);
     }
     // Without an expected version, a change in between is retried against the
     // new state (a few times): never silently overwritten or skipped.
@@ -566,6 +686,134 @@ class DefaultPartyCamera implements PartyCamera {
       if (result.status === "updated") return result.settings;
       if (expectedVersion !== undefined || attempt >= 2) throw settingsChanged();
     }
+  }
+
+  async previewWatermark(
+    draft: WatermarkDraft,
+    sampleBytes?: Uint8Array,
+  ): Promise<WatermarkPreview> {
+    // One preview render at a time in this process, newest wins: a request
+    // that is overtaken while it waits gives up instead of rendering.
+    const ticket = ++this.previewTicket;
+    const turn = this.previewTurn;
+    let release!: () => void;
+    this.previewTurn = new Promise<void>((resolve) => (release = resolve));
+    try {
+      await turn;
+      if (ticket !== this.previewTicket) {
+        throw new PartyCameraError("PreviewSuperseded", "Er is al een nieuwer voorbeeld gevraagd.");
+      }
+      return await this.renderPreview(draft, sampleBytes);
+    } finally {
+      release();
+    }
+  }
+
+  private async renderPreview(
+    draft: WatermarkDraft,
+    sampleBytes?: Uint8Array,
+  ): Promise<WatermarkPreview> {
+    const { watermarkLogo, ...fields } = draft ?? {};
+    const { changes, logo } = await validateWithLogo(
+      {
+        watermarkEnabled: fields.watermarkEnabled,
+        watermarkText: fields.watermarkText,
+        watermarkPosition: fields.watermarkPosition,
+        watermarkScale: fields.watermarkScale,
+        watermarkOpacity: fields.watermarkOpacity,
+      },
+      watermarkLogo,
+      (bytes) => this.normalizeDraftLogo(bytes),
+    );
+    const current = await this.repository.getSettings();
+    const look = galleryLook({ ...current, ...changes });
+    let spec: WatermarkSpec | null;
+    if (logo && look.watermark) {
+      // The draft's logo is not stored: drawn from the bytes in hand.
+      spec = { ...toSpec(look.watermark), logo: logo.bytes };
+    } else {
+      spec = await this.watermarkSpec(look);
+    }
+
+    let sample: WatermarkPreview["sample"];
+    let original: Uint8Array;
+    if (sampleBytes !== undefined) {
+      original = (await normalizeShot(sampleBytes)).bytes;
+      sample = "upload";
+    } else {
+      const photo = await this.firstGalleryPhoto();
+      if (photo) {
+        original = await this.previewOriginal(photo);
+        sample = "photo";
+      } else {
+        original = await generatedSample();
+        sample = "generated";
+      }
+    }
+    const bytes = await renderDerived(original, "display", spec);
+    return { bytes, contentType: "image/jpeg", sample };
+  }
+
+  async prepareGallery(
+    options: { cursor?: string; limit?: number } = {},
+  ): Promise<GalleryPreparation> {
+    const limit = Math.min(
+      MAX_PREPARE_GALLERY_BATCH_SIZE,
+      Math.max(1, Math.floor(Number(options.limit ?? PREPARE_GALLERY_BATCH_SIZE)) || 1),
+    );
+    const done = { photos: 0, rendered: 0, removed: 0, failed: 0, nextCursor: null };
+    const after = options.cursor === undefined ? undefined : decodeCursor(options.cursor);
+    if (after === null) return done;
+
+    const [settings, records] = await Promise.all([
+      this.repository.getSettings(),
+      this.repository.listGalleryPhotos({ after, limit: limit + 1 }),
+    ]);
+    const page = records.slice(0, limit);
+    const look = galleryLook(settings);
+    const result: GalleryPreparation = { ...done, photos: page.length };
+
+    let next = 0;
+    const worker = async () => {
+      while (next < page.length) {
+        const record = page[next++];
+        try {
+          const { rendered, removed } = await this.preparePhoto(record.id, look);
+          result.rendered += rendered;
+          result.removed += removed;
+        } catch (error) {
+          result.failed += 1;
+          console.error(`prepareGallery: could not prepare photo ${record.id}`, error);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: PREPARE_CONCURRENCY }, worker));
+
+    const last = page.at(-1);
+    result.nextCursor = records.length > limit && last ? encodeCursor(last) : null;
+    return result;
+  }
+
+  /** Render what is missing of a photo's Galerij images; remove those of an old watermark. */
+  private async preparePhoto(
+    photoId: string,
+    look: Look,
+  ): Promise<{ rendered: number; removed: number }> {
+    const photo = await this.repository.findPhoto(photoId);
+    if (!photo) return { rendered: 0, removed: 0 };
+    const existing = new Set(await this.derivedKeys(photo.id));
+    let rendered = 0;
+    for (const variant of ["thumb", "display"] as const) {
+      if (existing.has(derivedKey(photo.id, variant, look.key))) continue;
+      await this.renderDerivedPhoto(photo, variant, look);
+      rendered += 1;
+    }
+    const stale = [...existing].filter((key) => {
+      const match = WATERMARKED_KEY_RE.exec(key);
+      return match !== null && match[1] !== look.key;
+    });
+    if (stale.length > 0) await this.blobStore.delete(stale);
+    return { rendered, removed: stale.length };
   }
 
   async getStats(): Promise<PartyStats> {
@@ -661,7 +909,7 @@ class DefaultPartyCamera implements PartyCamera {
         return { bytes: await this.readOriginal(photo), contentType: "image/jpeg" };
       }
       if (!isDerivedVariant(variant)) throw unknownPhoto();
-      return this.renderDerivedPhoto(photo, variant, HOST_RENDER_KEY);
+      return this.renderDerivedPhoto(photo, variant, PLAIN);
     }
 
     // Everyone else. Checked at runtime too, for untyped callers: anything
@@ -674,15 +922,15 @@ class DefaultPartyCamera implements PartyCamera {
       ? await this.repository.findPhoto(photoId.toLowerCase())
       : null;
     if (!photo || photo.hidden) throw unknownPhoto();
-    return this.renderDerivedPhoto(photo, variant, galleryRenderKey(settings));
+    return this.renderDerivedPhoto(photo, variant, galleryLook(settings));
   }
 
   private async renderDerivedPhoto(
     photo: Photo,
     variant: DerivedVariant,
-    renderKey: string,
+    look: Look,
   ): Promise<RenderedPhoto> {
-    const key = derivedKey(photo.id, variant, renderKey);
+    const key = derivedKey(photo.id, variant, look.key);
     // One render per key at a time in this process: concurrent requests for
     // the same image (everyone opening the Galerij at the Reveal) share it.
     const inFlight = this.rendering.get(key);
@@ -690,7 +938,11 @@ class DefaultPartyCamera implements PartyCamera {
     const render = (async (): Promise<RenderedPhoto> => {
       const cached = await this.blobStore.get(key);
       if (cached) return { bytes: cached, contentType: "image/jpeg" };
-      const bytes = await renderDerived(await this.readOriginal(photo), variant);
+      const [original, watermark] = await Promise.all([
+        this.readOriginal(photo),
+        this.watermarkSpec(look),
+      ]);
+      const bytes = await renderDerived(original, variant, watermark);
       await this.cacheDerived(photo.id, key, bytes);
       return { bytes, contentType: "image/jpeg" };
     })();
@@ -708,12 +960,12 @@ class DefaultPartyCamera implements PartyCamera {
       this.repository.getSettings(),
     ]);
     if (!photo) return;
-    const galleryKey = galleryRenderKey(settings);
+    const look = galleryLook(settings);
     // Sequential: one sharp pipeline at a time is plenty in the background.
-    await this.renderDerivedPhoto(photo, "thumb", galleryKey);
-    await this.renderDerivedPhoto(photo, "display", galleryKey);
-    if (galleryKey !== HOST_RENDER_KEY) {
-      await this.renderDerivedPhoto(photo, "thumb", HOST_RENDER_KEY);
+    await this.renderDerivedPhoto(photo, "thumb", look);
+    await this.renderDerivedPhoto(photo, "display", look);
+    if (look.key !== PLAIN.key) {
+      await this.renderDerivedPhoto(photo, "thumb", PLAIN);
     }
   }
 
@@ -771,6 +1023,57 @@ class DefaultPartyCamera implements PartyCamera {
     if (!found) {
       throw new PartyCameraError("UnknownPhoto", "Deze foto bestaat niet (meer).");
     }
+  }
+
+  /** The watermark to draw for `look` (logo bytes loaded), or null. */
+  private async watermarkSpec(look: Look): Promise<WatermarkSpec | null> {
+    if (!look.watermark) return null;
+    const key = look.watermark.watermarkLogoKey;
+    return { ...toSpec(look.watermark), logo: key ? await this.readLogo(key) : null };
+  }
+
+  private async readLogo(key: string): Promise<Uint8Array> {
+    const cached = this.logos.get(key);
+    if (cached) return cached;
+    const bytes = await this.blobStore.get(key);
+    // Never render (and cache) a watermark without its logo.
+    if (!bytes) throw new Error(`renderPhoto: watermark logo ${key} is missing`);
+    this.cacheLogo(key, bytes);
+    return bytes;
+  }
+
+  private cacheLogo(key: string, bytes: Uint8Array): void {
+    if (this.logos.size >= 4) this.logos.clear();
+    this.logos.set(key, bytes);
+  }
+
+  /**
+   * {@link normalizeWatermarkLogo} for previews: the form sends the same logo
+   * file with every change, so it is decoded and scaled only once.
+   */
+  private normalizeDraftLogo(input: Uint8Array): ReturnType<typeof normalizeWatermarkLogo> {
+    const hash = createHash("sha256").update(input).digest("hex");
+    let result = this.draftLogos.get(hash);
+    if (!result) {
+      if (this.draftLogos.size >= 2) this.draftLogos.clear();
+      result = normalizeWatermarkLogo(input);
+      this.draftLogos.set(hash, result);
+    }
+    return result;
+  }
+
+  /** The first photo of the Galerij (hidden ones excepted), or null. */
+  private async firstGalleryPhoto(): Promise<Photo | null> {
+    const [first] = await this.repository.listGalleryPhotos({ limit: 1 });
+    return first ? this.repository.findPhoto(first.id) : null;
+  }
+
+  /** The original of the preview photo; kept in memory while the Host tweaks. */
+  private async previewOriginal(photo: Photo): Promise<Uint8Array> {
+    if (this.previewSample?.storageKey !== photo.storageKey) {
+      this.previewSample = { storageKey: photo.storageKey, bytes: await this.readOriginal(photo) };
+    }
+    return this.previewSample.bytes;
   }
 
   private async readOriginal(photo: Photo): Promise<Uint8Array> {
@@ -868,4 +1171,68 @@ function settingsChanged(): PartyCameraError {
     "SettingsChanged",
     "De instellingen zijn intussen gewijzigd. Herlaad de pagina en probeer het opnieuw.",
   );
+}
+
+/**
+ * Validate settings fields and, if given, an uploaded logo, reporting every
+ * problem at once. `logo` is the normalized logo to store (absent when no new
+ * logo was given); `changes.watermarkLogoKey` names it (or is null to remove).
+ */
+async function validateWithLogo(
+  fields: SettingsUpdate,
+  watermarkLogo: Uint8Array | null | undefined,
+  normalize: typeof normalizeWatermarkLogo = normalizeWatermarkLogo,
+): Promise<{ changes: SettingsChanges; logo?: { key: string; bytes: Uint8Array } }> {
+  const errors: SettingsFieldErrors = {};
+  let changes: SettingsChanges = {};
+  try {
+    changes = validateSettingsUpdate(fields);
+  } catch (error) {
+    if (!(error instanceof InvalidSettingsError)) throw error;
+    Object.assign(errors, error.fieldErrors);
+  }
+  let logo: { key: string; bytes: Uint8Array } | undefined;
+  if (watermarkLogo === null) {
+    changes.watermarkLogoKey = null;
+  } else if (watermarkLogo !== undefined) {
+    const result = await normalize(watermarkLogo);
+    if (result.ok) {
+      logo = { key: result.key, bytes: result.bytes };
+      changes.watermarkLogoKey = result.key;
+    } else {
+      errors.watermarkLogo = result.problem;
+    }
+  }
+  if (Object.keys(errors).length > 0) throw new InvalidSettingsError(errors);
+  return { changes, logo };
+}
+
+function toSpec(settings: WatermarkSettings): Omit<WatermarkSpec, "logo"> {
+  return {
+    text: settings.watermarkText,
+    position: settings.watermarkPosition,
+    scale: settings.watermarkScale,
+    opacity: settings.watermarkOpacity,
+  };
+}
+
+let sampleImage: Promise<Uint8Array> | undefined;
+
+/**
+ * A stand-in photo for the preview before anyone took one: light at the top
+ * left, dark at the bottom right, so the watermark shows on both.
+ */
+function generatedSample(): Promise<Uint8Array> {
+  sampleImage ??= (async () => {
+    const width = DISPLAY_LONG_SIDE;
+    const height = Math.round((DISPLAY_LONG_SIDE * 3) / 4);
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
+      `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">` +
+      `<stop offset="0" stop-color="#fde68a"/><stop offset="0.5" stop-color="#f97316"/>` +
+      `<stop offset="1" stop-color="#1c1917"/></linearGradient></defs>` +
+      `<rect width="100%" height="100%" fill="url(#g)"/></svg>`;
+    return new Uint8Array(await sharp(Buffer.from(svg)).jpeg({ quality: 85 }).toBuffer());
+  })();
+  return sampleImage;
 }
