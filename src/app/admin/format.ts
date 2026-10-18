@@ -1,8 +1,9 @@
+import { PARTY_TIME_ZONE } from "../party-time";
+
 /**
  * Times in the Admin are shown in the party's time zone, whatever the server's
  * (Vercel runs in UTC). Formatted on the server, so no hydration mismatch.
  */
-const PARTY_TIME_ZONE = "Europe/Amsterdam";
 
 const time = new Intl.DateTimeFormat("nl-NL", {
   timeZone: PARTY_TIME_ZONE,

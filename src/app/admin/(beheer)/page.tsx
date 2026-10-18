@@ -4,6 +4,7 @@ import { MAX_GUEST_NAME_LENGTH } from "@/party-camera";
 import { requireHost } from "@/server/host";
 import { Splash } from "../../splash";
 import { countPhotos } from "../format";
+import { describeReveal } from "../reveal-status";
 import { AutoRefresh } from "./auto-refresh";
 import { RenameGuest } from "./rename-guest";
 
@@ -17,7 +18,12 @@ export default function AdminOverviewPage() {
 
 async function Overview() {
   const camera = await requireHost();
-  const [stats, settings] = await Promise.all([camera.getStats(), camera.getSettings()]);
+  const [stats, settings, reveal] = await Promise.all([
+    camera.getStats(),
+    camera.getSettings(),
+    camera.getRevealState(),
+  ]);
+  const revealStatus = describeReveal(reveal);
 
   const tiles = [
     { label: "Gasten", value: stats.guestCount },
@@ -34,16 +40,28 @@ async function Overview() {
           <h1 id="stats-heading" className="text-2xl font-bold tracking-tight">
             Overzicht
           </h1>
-          <Link
-            href="/admin/instellingen"
-            className={`rounded-full px-3 py-1 text-sm font-semibold ${
-              settings.captureOpen
-                ? "bg-green-500/15 text-green-400"
-                : "bg-red-500/15 text-red-400"
-            }`}
-          >
-            Fotograferen {settings.captureOpen ? "open" : "gesloten"}
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href="/admin/instellingen"
+              className={`rounded-full px-3 py-1 text-sm font-semibold ${
+                revealStatus.revealed
+                  ? "bg-green-500/15 text-green-400"
+                  : "bg-amber-500/15 text-amber-300"
+              }`}
+            >
+              {revealStatus.label}
+            </Link>
+            <Link
+              href="/admin/instellingen"
+              className={`rounded-full px-3 py-1 text-sm font-semibold ${
+                settings.captureOpen
+                  ? "bg-green-500/15 text-green-400"
+                  : "bg-red-500/15 text-red-400"
+              }`}
+            >
+              Fotograferen {settings.captureOpen ? "open" : "gesloten"}
+            </Link>
+          </div>
         </div>
         <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {tiles.map(({ label, value }) => (

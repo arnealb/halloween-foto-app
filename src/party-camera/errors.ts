@@ -2,7 +2,7 @@ import type { SettingsUpdate } from "./types";
 
 /**
  * Typed failures of the PartyCamera interface. Callers branch on `code`.
- * Later features add codes such as CaptureClosed and NotRevealed.
+ * Later features add more codes.
  *
  * - `InvalidName`: joining without a usable name.
  * - `UnknownGuest`: no Gast with this id.
@@ -13,6 +13,7 @@ import type { SettingsUpdate } from "./types";
  *   Nothing changed; retry later to learn the outcome.
  * - `UnknownPhoto`: no photo with this id (never taken, or deleted).
  * - `CaptureClosed`: the Host closed fotograferen; no new Shot is taken.
+ * - `NotRevealed`: the Galerij is asked for before the Reveal.
  * - `SettingsChanged`: a settings update based on an older settings version
  *   (changed elsewhere in the meantime); nothing changed. Reload and retry.
  * - `InvalidSettings`: a settings update with invalid values; nothing changed.
@@ -27,6 +28,7 @@ export type PartyCameraErrorCode =
   | "ShotInProgress"
   | "UnknownPhoto"
   | "CaptureClosed"
+  | "NotRevealed"
   | "InvalidSettings"
   | "SettingsChanged";
 

@@ -4,6 +4,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   BlobStore,
   EventSettings,
+  GalleryPhotoRecord,
+  GalleryQuery,
   Guest,
   GuestWithPhotoCounts,
   Photo,
@@ -336,6 +338,53 @@ export class SupabaseRepository implements Repository {
     if (error) throw new Error(`renameGuest failed: ${error.message}`);
     return data.length > 0;
   }
+
+  async listGalleryPhotos({ guestId, after, limit }: GalleryQuery): Promise<GalleryPhotoRecord[]> {
+    if (guestId !== undefined && !UUID_RE.test(guestId)) return [];
+    if (after && !UUID_RE.test(after.id)) return [];
+    // One query: the Gast's name comes along through the foreign key. Served
+    // by the partial indexes of migration 0009.
+    let query = this.db
+      .from("photos")
+      .select("id, guest_id, width, height, taken_at, guests!inner(name)")
+      .eq("hidden", false);
+    if (guestId !== undefined) query = query.eq("guest_id", guestId);
+    if (after) {
+      // Quoted: an ISO timestamp contains ':' and '.'.
+      const key = `"${after.takenAt.toISOString()}"`;
+      query = query.or(`taken_at.gt.${key},and(taken_at.eq.${key},id.gt.${after.id})`);
+    }
+    const { data, error } = await query
+      .order("taken_at")
+      .order("id")
+      .limit(Math.min(limit, PAGE_SIZE))
+      .overrideTypes<GalleryPhotoRow[], { merge: false }>();
+    if (error) throw new Error(`listGalleryPhotos failed: ${error.message}`);
+    return data.flatMap((row) =>
+      row.guests
+        ? [
+            {
+              id: row.id,
+              guestId: row.guest_id,
+              guestName: row.guests.name,
+              width: row.width,
+              height: row.height,
+              takenAt: new Date(row.taken_at),
+            },
+          ]
+        : [],
+    );
+  }
+}
+
+interface GalleryPhotoRow {
+  id: string;
+  guest_id: string;
+  width: number;
+  height: number;
+  taken_at: string;
+  /** Many-to-one embed through photos.guest_id; `!inner` drops orphans. */
+  guests: { name: string } | null;
 }
 
 /** JSON returned by the `update_event_settings` Postgres function (0008 migration). */

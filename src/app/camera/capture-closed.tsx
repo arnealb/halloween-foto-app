@@ -1,12 +1,16 @@
+import { RevealNote, type RevealInfo } from "./reveal-note";
+
 /** "Fotograferen is gesloten": shown instead of the viewfinder while the Host has it closed. */
 export function CaptureClosed({
   title,
   remaining,
   perGuest,
+  reveal,
 }: {
   title: string;
   remaining: number;
   perGuest: number;
+  reveal: RevealInfo;
 }) {
   return (
     <section className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
@@ -19,6 +23,7 @@ export function CaptureClosed({
         Je hebt nog <span className="font-mono tabular-nums">{remaining} / {perGuest}</span>{" "}
         shots over. Gaat het fotograferen weer open, dan zie je hier vanzelf de camera.
       </p>
+      <RevealNote reveal={reveal} className="text-stone-400" />
     </section>
   );
 }

@@ -7,6 +7,7 @@ import { LiveCamera } from "./live-camera";
 import { preparePhoto, UnsupportedPhotoError } from "./prepare-photo";
 import { CaptureClosed } from "./capture-closed";
 import { RollFull } from "./roll-full";
+import { RevealNote, type RevealInfo } from "./reveal-note";
 import { initialRollState, rollReducer, shotsRemaining, type ServerView } from "./roll-state";
 import { newShotId } from "./shot-id";
 import {
@@ -30,8 +31,8 @@ export interface CameraProps {
   captureOpen: boolean;
   /** Unique per server render: every refresh brings a new server view. */
   viewId: string;
-  /** ISO timestamp of the Reveal, or null. */
-  revealAt: string | null;
+  /** The Reveal: whether the Galerij is open, or when it opens. */
+  reveal: RevealInfo;
   /** Server limits, passed in so this client code does not import the domain module. */
   maxLongSide: number;
   maxBytes: number;
@@ -63,7 +64,7 @@ export function Camera({
   shotsPerGuest: serverPerGuest,
   captureOpen: serverCaptureOpen,
   viewId,
-  revealAt,
+  reveal,
   maxLongSide,
   maxBytes,
   captureSource: CaptureSourceComponent = LiveCamera,
@@ -227,13 +228,18 @@ export function Camera({
     ) : null;
 
   if (remaining <= 0) {
-    return <RollFull shotsPerGuest={roll.perGuest} revealAt={revealAt} />;
+    return <RollFull shotsPerGuest={roll.perGuest} reveal={reveal} />;
   }
 
   if (!captureOpen) {
     return (
       <>
-        <CaptureClosed title={title} remaining={remaining} perGuest={roll.perGuest} />
+        <CaptureClosed
+          title={title}
+          remaining={remaining}
+          perGuest={roll.perGuest}
+          reveal={reveal}
+        />
         <p role="status" className="min-h-5 text-center text-sm font-medium">
           {uploadStatus}
         </p>
@@ -273,6 +279,7 @@ export function Camera({
       <p role="status" className="min-h-5 text-center text-sm font-medium">
         {uploadStatus}
       </p>
+      <RevealNote reveal={reveal} className="text-center text-xs text-stone-500" />
     </>
   );
 }

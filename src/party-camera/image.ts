@@ -82,22 +82,31 @@ function invalid(message: string): PartyCameraError {
 /** Long side of a thumbnail: sharp on a 3x phone screen in a 3-column grid. */
 export const THUMB_LONG_SIDE = 480;
 
-/** JPEG quality of thumbnails: small files matter more than detail here. */
-const THUMB_JPEG_QUALITY = 72;
+/** Long side of the `display` variant: the big view in the Galerij. */
+export const DISPLAY_LONG_SIDE = 1600;
+
+/** A size of photo derived from the original (never the original itself). */
+export type DerivedVariant = "thumb" | "display";
+
+const DERIVED: Record<DerivedVariant, { longSide: number; quality: number }> = {
+  // Small files matter more than detail in a grid of hundreds.
+  thumb: { longSide: THUMB_LONG_SIDE, quality: 72 },
+  display: { longSide: DISPLAY_LONG_SIDE, quality: 80 },
+};
 
 /**
- * Render the thumbnail of a stored original (already oriented and stripped):
- * scaled to fit {@link THUMB_LONG_SIDE}, never enlarged, re-encoded as JPEG.
+ * Render a derived variant of a stored original (already oriented and
+ * stripped): scaled to fit the variant's long side, never enlarged,
+ * re-encoded as JPEG. This is where the watermark will be composited.
  */
-export async function renderThumb(original: Uint8Array): Promise<Uint8Array> {
+export async function renderDerived(
+  original: Uint8Array,
+  variant: DerivedVariant,
+): Promise<Uint8Array> {
+  const { longSide, quality } = DERIVED[variant];
   const data = await sharp(original, { limitInputPixels: MAX_INPUT_PIXELS })
-    .resize({
-      width: THUMB_LONG_SIDE,
-      height: THUMB_LONG_SIDE,
-      fit: "inside",
-      withoutEnlargement: true,
-    })
-    .jpeg({ quality: THUMB_JPEG_QUALITY, mozjpeg: true })
+    .resize({ width: longSide, height: longSide, fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality, mozjpeg: true })
     .toBuffer();
   return new Uint8Array(data);
 }

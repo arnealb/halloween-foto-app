@@ -6,7 +6,10 @@ import {
 } from "@/party-camera";
 import { requireHost } from "@/server/host";
 import { Splash } from "../../../splash";
+import { toPartyLocalInput } from "../../../party-time";
+import { describeReveal } from "../../reveal-status";
 import { CaptureToggle } from "./capture-toggle";
+import { RevealPanel } from "./reveal-panel";
 import { SettingsForm } from "./settings-form";
 
 export default function AdminSettingsPage() {
@@ -19,11 +22,18 @@ export default function AdminSettingsPage() {
 
 async function Settings() {
   const camera = await requireHost();
-  const settings = await camera.getSettings();
+  const [settings, reveal] = await Promise.all([camera.getSettings(), camera.getRevealState()]);
 
   return (
     <div className="flex max-w-xl flex-col gap-8">
       <h1 className="text-2xl font-bold tracking-tight">Instellingen</h1>
+
+      <RevealPanel
+        status={describeReveal(reveal)}
+        override={settings.revealOverride}
+        revealAtInput={settings.revealAt ? toPartyLocalInput(settings.revealAt) : ""}
+        version={settings.settingsVersion}
+      />
 
       <CaptureToggle captureOpen={settings.captureOpen} />
 

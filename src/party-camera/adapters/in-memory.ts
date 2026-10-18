@@ -3,6 +3,8 @@ import type {
   BlobStore,
   Clock,
   EventSettings,
+  GalleryPhotoRecord,
+  GalleryQuery,
   Guest,
   GuestWithPhotoCounts,
   Photo,
@@ -189,6 +191,29 @@ export class InMemoryRepository implements Repository {
     if (!guest) return false;
     guest.name = name;
     return true;
+  }
+
+  async listGalleryPhotos({ guestId, after, limit }: GalleryQuery): Promise<GalleryPhotoRecord[]> {
+    const records: GalleryPhotoRecord[] = [];
+    for (const photo of await this.listPhotos()) {
+      if (photo.hidden || (guestId !== undefined && photo.guestId !== guestId)) continue;
+      if (after) {
+        const t = photo.takenAt.getTime() - after.takenAt.getTime();
+        if (t < 0 || (t === 0 && compare(photo.id, after.id) <= 0)) continue;
+      }
+      const guest = this.guests.get(photo.guestId);
+      if (!guest) continue; // like the inner join
+      records.push({
+        id: photo.id,
+        guestId: photo.guestId,
+        guestName: guest.name,
+        width: photo.width,
+        height: photo.height,
+        takenAt: new Date(photo.takenAt),
+      });
+      if (records.length >= limit) break;
+    }
+    return records;
   }
 
   /** Recorded photos, for assertions in tests. */

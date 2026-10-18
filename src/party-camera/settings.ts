@@ -1,5 +1,5 @@
 import { InvalidSettingsError, type SettingsFieldErrors } from "./errors";
-import type { EventSettings, SettingsChanges, SettingsUpdate } from "./types";
+import type { EventSettings, RevealOverride, SettingsChanges, SettingsUpdate } from "./types";
 
 /** Longest Event title (after trimming). Keep in sync with migration 0007. */
 export const MAX_TITLE_LENGTH = 60;
@@ -13,6 +13,15 @@ export const MAX_SHOTS_PER_GUEST = 500;
  * into a CSS custom property on guest pages, so nothing else may get through.
  */
 const ACCENT_COLOR_RE = /^#[0-9a-f]{6}$/;
+
+const REVEAL_OVERRIDES: readonly RevealOverride[] = ["auto", "open", "closed"];
+
+/**
+ * Range a Reveal moment must fall in. Guards against typos such as year 20026
+ * (which a timestamptz would accept) more than it enforces anything.
+ */
+const EARLIEST_REVEAL = Date.UTC(2000, 0, 1);
+const LATEST_REVEAL = Date.UTC(2100, 0, 1);
 
 /**
  * Validate and normalize a settings update. Every field is checked, so the
@@ -67,6 +76,25 @@ export function validateSettingsUpdate(update: SettingsUpdate): SettingsChanges 
     if (typeof update.captureOpen !== "boolean") {
       errors.captureOpen = "Ongeldige keuze voor fotograferen.";
     } else changes.captureOpen = update.captureOpen;
+  }
+
+  if (update.revealAt !== undefined) {
+    const at = update.revealAt;
+    if (at === null) changes.revealAt = null;
+    else if (
+      !(at instanceof Date) ||
+      Number.isNaN(at.getTime()) ||
+      at.getTime() < EARLIEST_REVEAL ||
+      at.getTime() >= LATEST_REVEAL
+    ) {
+      errors.revealAt = "Kies een geldige datum en tijd voor de onthulling.";
+    } else changes.revealAt = new Date(at.getTime());
+  }
+
+  if (update.revealOverride !== undefined) {
+    if (!REVEAL_OVERRIDES.includes(update.revealOverride)) {
+      errors.revealOverride = "Ongeldige keuze voor de onthulling.";
+    } else changes.revealOverride = update.revealOverride;
   }
 
   if (Object.keys(errors).length > 0) throw new InvalidSettingsError(errors);

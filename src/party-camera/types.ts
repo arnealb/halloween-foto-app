@@ -141,7 +141,16 @@ export interface EventSettings {
  * are. Reveal and watermark fields join here with their features.
  */
 export type SettingsUpdate = Partial<
-  Pick<EventSettings, "title" | "welcomeText" | "accentColor" | "shotsPerGuest" | "captureOpen">
+  Pick<
+    EventSettings,
+    | "title"
+    | "welcomeText"
+    | "accentColor"
+    | "shotsPerGuest"
+    | "captureOpen"
+    | "revealAt"
+    | "revealOverride"
+  >
 >;
 
 /** Validated settings values for {@link Repository.updateSettings}. */
@@ -237,6 +246,33 @@ export interface Repository {
 
   /** Change a Gast's name (already validated). @returns whether the Gast exists. */
   renameGuest(id: string, name: string): Promise<boolean>;
+
+  /**
+   * One page of the Galerij: photos that are NOT hidden, each with the name of
+   * its Gast, ordered by (`takenAt`, id), starting strictly after `after`
+   * (keyset paging, so photos added or removed between pages never make a
+   * page repeat or skip one). With `guestId`, only that Gast's photos. At most
+   * `limit` photos.
+   */
+  listGalleryPhotos(query: GalleryQuery): Promise<GalleryPhotoRecord[]>;
+}
+
+/** What {@link Repository.listGalleryPhotos} is asked for. */
+export interface GalleryQuery {
+  guestId?: string;
+  /** The last photo of the previous page, or absent for the first page. */
+  after?: { takenAt: Date; id: string };
+  limit: number;
+}
+
+/** A visible photo with the name of the Gast who took it. */
+export interface GalleryPhotoRecord {
+  id: string;
+  guestId: string;
+  guestName: string;
+  width: number;
+  height: number;
+  takenAt: Date;
 }
 
 /** Private byte storage (originals, derived images, watermark logos). */
