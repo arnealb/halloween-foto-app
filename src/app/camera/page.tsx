@@ -3,8 +3,11 @@ import { redirect } from "next/navigation";
 import { MAX_SHOT_BYTES, MAX_SHOT_LONG_SIDE } from "@/party-camera";
 import { currentGuest } from "@/server/guest-session";
 import { partyCamera } from "@/server/party-camera";
+import { partyMetadata } from "../party-metadata";
 import { Splash } from "../splash";
 import { Camera } from "./camera";
+
+export const generateMetadata = partyMetadata;
 
 export default function CameraPage() {
   return (
@@ -26,7 +29,7 @@ async function CameraScreen() {
   return (
     <main
       style={{ "--accent": settings.accentColor } as CSSProperties}
-      className="mx-auto flex w-full max-w-md flex-1 flex-col justify-between gap-4 px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
+      className="mx-auto flex w-full max-w-md flex-1 flex-col justify-between gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]"
     >
       {/* Always the same component (it shows "rolletje vol" and "gesloten"
           itself), so a refresh never unmounts its upload queue. */}

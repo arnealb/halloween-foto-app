@@ -3,6 +3,7 @@
 import { useEffect, useEffectEvent, useReducer, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { CaptureSource } from "./capture-source";
+import { InstallHint } from "./install-hint";
 import { LiveCamera } from "./live-camera";
 import { preparePhoto, UnsupportedPhotoError } from "./prepare-photo";
 import { CaptureClosed } from "./capture-closed";
@@ -266,6 +267,8 @@ export function Camera({
           {welcomeText && <span className="line-clamp-2 whitespace-pre-line"> {welcomeText}</span>}
         </p>
       </header>
+
+      <InstallHint />
 
       <CaptureSourceComponent
         onCapture={handleCapture}

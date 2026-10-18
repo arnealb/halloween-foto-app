@@ -4,10 +4,10 @@
 
 **Blocked by:** 05 (Feestinstellingen & fotograferen open/dicht)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Een dynamisch web app manifest: de naam/short name komen uit de feestnaam, theme color uit de accentkleur, `display: standalone`, en de start-URL is de camera
-- [ ] App-iconen (incl. maskable) en Apple-meta-tags (`apple-mobile-web-app-capable`, status bar, touch icon)
-- [ ] Een beginscherm-hint met aparte uitleg voor iOS (Deel → Zet op beginscherm) en Android, verborgen in standalone-modus, en weg te klikken
-- [ ] Geen service worker (buiten scope)
+- [x] Een dynamisch web app manifest: de naam/short name komen uit de feestnaam, theme color uit de accentkleur, `display: standalone`, en de start-URL is de camera
+- [x] App-iconen (incl. maskable) en Apple-meta-tags (`apple-mobile-web-app-capable`, status bar, touch icon)
+- [x] Een beginscherm-hint met aparte uitleg voor iOS (Deel → Zet op beginscherm) en Android, verborgen in standalone-modus, en weg te klikken
+- [x] Geen service worker (buiten scope)
 - [ ] Handmatig geverifieerd: toevoegen aan het beginscherm op iOS en Android → opent schermvullend met het juiste label en icoon, en de gast blijft aangemeld
