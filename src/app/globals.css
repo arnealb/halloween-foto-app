@@ -12,6 +12,17 @@
   --color-foreground: var(--foreground);
   --color-accent: var(--accent);
   --font-sans: var(--font-geist-sans);
+  /* Shutter feedback: a short white flash over the viewfinder. */
+  --animate-shutter-flash: shutter-flash 280ms ease-out forwards;
+
+  @keyframes shutter-flash {
+    from {
+      opacity: 0.9;
+    }
+    to {
+      opacity: 0;
+    }
+  }
 }
 
 body {

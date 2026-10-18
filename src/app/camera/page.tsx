@@ -25,7 +25,7 @@ async function CameraScreen() {
   return (
     <main
       style={{ "--accent": settings.accentColor } as CSSProperties}
-      className="mx-auto flex w-full max-w-md flex-1 flex-col justify-between gap-8 px-6 py-10"
+      className="mx-auto flex w-full max-w-md flex-1 flex-col justify-between gap-4 px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
     >
       {guest.shotsRemaining <= 0 ? (
         <RollFull shotsPerGuest={guest.shotsPerGuest} revealAt={revealAt} />

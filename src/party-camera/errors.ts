@@ -6,12 +6,17 @@
  * - `UnknownGuest`: no Gast with this id.
  * - `RollFull`: the Gast's Rolletje is full; no Shot was taken.
  * - `InvalidImage`: the upload is not a decodable photo (or is too large).
+ * - `InvalidShotId`: the shot id is not a UUID, or belongs to another Gast.
+ * - `ShotInProgress`: another attempt is storing this same Shot right now.
+ *   Nothing changed; retry later to learn the outcome.
  */
 export type PartyCameraErrorCode =
   | "InvalidName"
   | "UnknownGuest"
   | "RollFull"
-  | "InvalidImage";
+  | "InvalidImage"
+  | "InvalidShotId"
+  | "ShotInProgress";
 
 export class PartyCameraError extends Error {
   readonly code: PartyCameraErrorCode;

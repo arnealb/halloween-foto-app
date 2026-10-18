@@ -1,13 +1,26 @@
 import type { NextRequest } from "next/server";
-import { isPartyCameraError, MAX_SHOT_BYTES } from "@/party-camera";
+import {
+  isPartyCameraError,
+  isShotId,
+  MAX_SHOT_BYTES,
+} from "@/party-camera";
 import { currentGuestId } from "@/server/guest-session";
 import { partyCamera } from "@/server/party-camera";
-import type { ShotResponse } from "@/app/camera/shot-response";
+import { SHOT_ID_HEADER, type ShotResponse } from "@/app/camera/shot-response";
+
+/**
+ * Seconds a Shot upload may run. Must stay well below PartyCamera's
+ * PENDING_SHOT_TIMEOUT_MS, after which a retry takes over the Shot of an
+ * attempt presumed dead.
+ */
+export const maxDuration = 60;
 
 /**
  * POST /api/shots: the Gast behind the guest cookie takes a Shot.
  *
- * Body: the photo bytes (e.g. `image/jpeg`), nothing else. The guestId comes
+ * Body: the photo bytes (e.g. `image/jpeg`), nothing else. Header
+ * `X-Shot-Id`: a UUID the camera generates once per photo and repeats on every
+ * retry, so a retried upload never costs a second shot. The guestId comes
  * only from the signed cookie, never from the request. The response carries
  * only the Rolletje counter; never a URL or the bytes of the photo.
  */
@@ -19,6 +32,9 @@ export async function POST(request: NextRequest): Promise<Response> {
   const guestId = await currentGuestId();
   if (!guestId) return reply(401, { ok: false, error: "NoSession" });
 
+  const shotId = request.headers.get(SHOT_ID_HEADER);
+  if (!isShotId(shotId)) return reply(400, { ok: false, error: "InvalidShotId" });
+
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.startsWith("image/")) {
     return reply(415, { ok: false, error: "InvalidImage" });
@@ -28,7 +44,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (bytes === "too-large") return reply(413, { ok: false, error: "TooLarge" });
 
   try {
-    const shot = await partyCamera().takeShot(guestId, bytes);
+    const shot = await partyCamera().takeShot(guestId, shotId, bytes);
     return reply(200, { ok: true, ...shot });
   } catch (error) {
     if (isPartyCameraError(error, "RollFull")) {
@@ -40,13 +56,30 @@ export async function POST(request: NextRequest): Promise<Response> {
     if (isPartyCameraError(error, "InvalidImage")) {
       return reply(422, { ok: false, error: "InvalidImage" });
     }
+    if (isPartyCameraError(error, "InvalidShotId")) {
+      return reply(400, { ok: false, error: "InvalidShotId" });
+    }
+    if (isPartyCameraError(error, "ShotInProgress")) {
+      return reply(
+        409,
+        { ok: false, error: "ShotInProgress" },
+        { "Retry-After": "15" },
+      );
+    }
     console.error("POST /api/shots failed", error);
     return reply(500, { ok: false, error: "ServerError" });
   }
 }
 
-function reply(status: number, body: ShotResponse): Response {
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+function reply(
+  status: number,
+  body: ShotResponse,
+  headers: Record<string, string> = {},
+): Response {
+  return Response.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store", ...headers },
+  });
 }
 
 /**

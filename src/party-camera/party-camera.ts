@@ -15,6 +15,21 @@ import type {
 export const MAX_GUEST_NAME_LENGTH = 40;
 
 /**
+ * A pending Shot reservation older than this belongs to an attempt that died
+ * (server functions are capped well below it); a retry of that Shot takes the
+ * reservation over instead of waiting forever, and the next new Shot of the
+ * Gast gives it back (so a dead upload that is never retried costs no shot).
+ */
+export const PENDING_SHOT_TIMEOUT_MS = 2 * 60 * 1000;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Whether `value` is a well-formed shot id (a UUID, as `crypto.randomUUID()` makes). */
+export function isShotId(value: unknown): value is string {
+  return typeof value === "string" && UUID_RE.test(value);
+}
+
+/**
  * The Party Camera domain module. All business rules live here; route
  * handlers, server actions and pages only translate HTTP/cookies to calls on
  * this object.
@@ -35,16 +50,23 @@ export interface PartyCamera {
   getGuest(guestId: string): Promise<GuestWithRoll>;
 
   /**
-   * A Gast takes a Shot. The photo is normalized (EXIF orientation applied,
-   * all metadata incl. GPS stripped, re-encoded as JPEG), one shot is reserved
-   * atomically on the Rolletje, the original is stored privately and the Shot
-   * is recorded. If storing fails, the reservation is released: a failed
-   * upload costs no shot.
+   * A Gast takes a Shot. `shotId` is a UUID the client generates once per
+   * photo and repeats on every retry of its upload, which makes this call
+   * idempotent: a Shot that was already stored (its answer got lost) is not
+   * counted or stored again; the call just returns the current Rolletje.
+   *
+   * Otherwise one shot is reserved atomically on the Rolletje, the photo is
+   * normalized (EXIF orientation applied, all metadata incl. GPS stripped,
+   * re-encoded as JPEG), the original is stored privately and the Shot is
+   * recorded under `shotId`. If anything fails after the reservation, it is
+   * released: a failed upload costs no shot.
    *
    * Returns only the Rolletje counter; never anything that reveals the photo.
-   * @throws PartyCameraError `InvalidImage`, `UnknownGuest`, `RollFull`
+   * @throws PartyCameraError `InvalidShotId`, `UnknownGuest`, `RollFull`,
+   *   `ShotInProgress` (the same Shot is being stored by a concurrent attempt;
+   *   retry later), `InvalidImage`
    */
-  takeShot(guestId: string, imageBytes: Uint8Array): Promise<ShotTaken>;
+  takeShot(guestId: string, shotId: string, imageBytes: Uint8Array): Promise<ShotTaken>;
 
   /** The Event settings (title, Rolletje size, Reveal, watermark, ...). */
   getSettings(): Promise<EventSettings>;
@@ -93,68 +115,111 @@ class DefaultPartyCamera implements PartyCamera {
     return this.withRoll(guest);
   }
 
-  async takeShot(guestId: string, imageBytes: Uint8Array): Promise<ShotTaken> {
-    // Cheap early exit before decoding: an unknown Gast or a full Rolletje never
-    // costs server CPU on image work. The atomic reservation below stays the
-    // real guard against races.
-    const guest = await this.getGuest(guestId);
-    if (guest.shotsRemaining <= 0) {
-      throw new PartyCameraError("RollFull", "Je rolletje is vol.");
+  async takeShot(
+    guestId: string,
+    rawShotId: string,
+    imageBytes: Uint8Array,
+  ): Promise<ShotTaken> {
+    if (!isShotId(rawShotId)) {
+      throw new PartyCameraError("InvalidShotId", "Ongeldig shot-id.");
     }
+    const shotId = rawShotId.toLowerCase();
+    const attemptId = this.newId();
+    const now = this.clock.now();
 
-    const image = await normalizeShot(imageBytes);
-
-    const reservation = await this.repository.reserveShot(guestId);
-    if (reservation.status === "unknown-guest") {
-      throw new PartyCameraError("UnknownGuest", "Deze gast bestaat niet.");
-    }
-    if (reservation.status === "roll-full") {
-      throw new PartyCameraError("RollFull", "Je rolletje is vol.");
-    }
-
-    const photoId = this.newId();
-    const photo: Photo = {
-      id: photoId,
+    // Reserve before decoding: a full Rolletje or a repeated Shot never costs
+    // server CPU on image work, and the reservation is the single arbiter for
+    // both the limit and idempotency.
+    const reservation = await this.repository.reserveShot({
       guestId,
-      storageKey: `originals/${guestId}/${photoId}.jpg`,
-      width: image.width,
-      height: image.height,
-      takenAt: this.clock.now(),
+      shotId,
+      attemptId,
+      now,
+      staleBefore: new Date(now.getTime() - PENDING_SHOT_TIMEOUT_MS),
+    });
+    switch (reservation.status) {
+      case "unknown-guest":
+        throw new PartyCameraError("UnknownGuest", "Deze gast bestaat niet.");
+      case "roll-full":
+        throw new PartyCameraError("RollFull", "Je rolletje is vol.");
+      case "foreign-shot":
+        throw new PartyCameraError("InvalidShotId", "Ongeldig shot-id.");
+      case "in-progress":
+        throw new PartyCameraError(
+          "ShotInProgress",
+          "Deze foto wordt al opgeslagen. Probeer het zo opnieuw.",
+        );
+      case "already-stored":
+        return rollAfter(reservation);
+      case "reserved":
+        break;
+    }
+
+    // Give the shot back; never masks the error that caused the release.
+    // Resolves to whether this attempt's reservation was actually released.
+    const release = () =>
+      this.repository.releaseShot(shotId, attemptId).catch((releaseError) => {
+        console.error("takeShot: could not release the reserved shot", releaseError);
+        return false;
+      });
+
+    const photo: Photo = {
+      id: shotId,
+      guestId,
+            // Unique per attempt: cleaning up after this attempt can never delete
+      // bytes another attempt of the same Shot stored and recorded.
+      storageKey: `originals/${guestId}/${shotId}-${attemptId}.jpg`,
+      width: 0,
+      height: 0,
+      takenAt: now,
       hidden: false,
     };
 
     try {
+      const image = await normalizeShot(imageBytes);
+      photo.width = image.width;
+      photo.height = image.height;
       await this.blobStore.put(photo.storageKey, image.bytes, "image/jpeg");
     } catch (error) {
-      await this.releaseReservation(guestId);
+      await release();
       throw error;
     }
 
+    let recording;
     try {
-      await this.repository.insertPhoto(photo);
+      recording = await this.repository.recordShot(photo, attemptId);
     } catch (error) {
-      // Without a record the stored bytes are orphaned: remove them too.
-      await this.blobStore.delete([photo.storageKey]).catch((cleanupError) => {
-        console.error("takeShot: could not remove orphaned original", cleanupError);
-      });
-      await this.releaseReservation(guestId);
+      // The recording may still have committed (only its answer got lost). Only
+      // when our reservation is still pending, and so released now, is it
+      // certain no record points at the bytes.
+      if (await release()) await this.removeOrphan(photo.storageKey);
       throw error;
     }
+    switch (recording) {
+      case "recorded":
+        break;
+      case "already-stored":
+        // A competing attempt stored this Shot first; ours is a spare copy.
+        await this.removeOrphan(photo.storageKey);
+        break;
+      case "not-reserved":
+        // This attempt lost the Shot (released, or taken over by a retry after
+        // it was presumed dead). Record nothing; the client retries.
+        await this.removeOrphan(photo.storageKey);
+        throw new Error("takeShot: this attempt no longer holds the Shot's reservation");
+    }
 
-    return {
-      shotsPerGuest: reservation.shotsPerGuest,
-      shotsRemaining: Math.max(0, reservation.shotsPerGuest - reservation.shotsTaken),
-    };
+    return rollAfter(reservation);
   }
 
   getSettings(): Promise<EventSettings> {
     return this.repository.getSettings();
   }
 
-  /** Give a reserved shot back; never masks the error that caused it. */
-  private async releaseReservation(guestId: string): Promise<void> {
-    await this.repository.releaseShot(guestId).catch((releaseError) => {
-      console.error("takeShot: could not release the reserved shot", releaseError);
+  /** Remove stored bytes that no photo record points to. */
+  private async removeOrphan(storageKey: string): Promise<void> {
+    await this.blobStore.delete([storageKey]).catch((cleanupError) => {
+      console.error("takeShot: could not remove orphaned original", cleanupError);
     });
   }
 
@@ -166,6 +231,16 @@ class DefaultPartyCamera implements PartyCamera {
       shotsRemaining: Math.max(0, shotsPerGuest - guest.shotsTaken),
     };
   }
+}
+
+function rollAfter({
+  shotsTaken,
+  shotsPerGuest,
+}: {
+  shotsTaken: number;
+  shotsPerGuest: number;
+}): ShotTaken {
+  return { shotsPerGuest, shotsRemaining: Math.max(0, shotsPerGuest - shotsTaken) };
 }
 
 function normalizeGuestName(raw: unknown): string {
