@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import {
   InvalidSettingsError,
   isPartyCameraError,
+  type RevealOverride,
   type SettingsFieldErrors,
 } from "@/party-camera";
 import {
@@ -14,6 +15,7 @@ import {
   startAdminSession,
 } from "@/server/admin-session";
 import { ADMIN_LOGIN_PATH, requireHost } from "@/server/host";
+import { fromPartyLocalInput } from "../party-time";
 import {
   loginLockout,
   recordLoginFailure,
@@ -120,7 +122,7 @@ export interface SettingsFormValues {
 }
 
 export interface SettingsFormState {
-  /** Counts submissions, so the form remounts with fresh values after each one. */
+  /** Counts submissions, so every result is a new state. */
   submissions: number;
   /** Set after a successful save. */
   saved?: boolean;
@@ -202,6 +204,88 @@ export async function setCaptureOpenAction(
   } catch (error) {
     console.error("setCaptureOpenAction failed", error);
     return { error: "Er ging iets mis. Probeer het opnieuw." };
+  }
+}
+
+export interface RevealOverrideState {
+  error?: string;
+}
+
+const REVEAL_OVERRIDES: readonly string[] = ["auto", "open", "closed"] satisfies RevealOverride[];
+
+/**
+ * "Nu onthullen" / "verborgen houden" / "automatisch". Form field `override`:
+ * `open`, `closed` or `auto`. The requested value is the whole intent, so no
+ * version check.
+ */
+export async function setRevealOverrideAction(
+  _previous: RevealOverrideState,
+  formData: FormData,
+): Promise<RevealOverrideState> {
+  const camera = await requireHost();
+  const override = String(formData.get("override") ?? "");
+  if (!REVEAL_OVERRIDES.includes(override)) return { error: "Ongeldige keuze." };
+  try {
+    await camera.setRevealOverride(override as RevealOverride);
+    refresh();
+    return {};
+  } catch (error) {
+    console.error("setRevealOverrideAction failed", error);
+    return { error: "Er ging iets mis. Probeer het opnieuw." };
+  }
+}
+
+export interface RevealAtFormState {
+  /** Counts submissions, so every result is a new state. */
+  submissions: number;
+  saved?: boolean;
+  error?: string;
+}
+
+/**
+ * Set or clear the Reveal moment. Form fields: `revealAt` (a datetime-local
+ * value in the party's time zone; stored as UTC), `intent` (`save` or
+ * `clear`) and `settingsVersion` (the version the form was shown with).
+ */
+export async function updateRevealAtAction(
+  previous: RevealAtFormState,
+  formData: FormData,
+): Promise<RevealAtFormState> {
+  const camera = await requireHost();
+  const submissions = (previous?.submissions ?? 0) + 1;
+  const value = String(formData.get("revealAt") ?? "");
+  const clear = formData.get("intent") === "clear";
+  const version = String(formData.get("settingsVersion") ?? "");
+
+  let revealAt: Date | null = null;
+  if (!clear) {
+    if (value.trim() === "") {
+      return { submissions, error: "Kies een datum en tijd, of wis het moment." };
+    }
+    revealAt = fromPartyLocalInput(value);
+    if (!revealAt) {
+      return { submissions, error: "Kies een geldige datum en tijd voor de onthulling." };
+    }
+  }
+  try {
+    await camera.updateSettings(
+      { revealAt },
+      { expectedVersion: /^\d{1,9}$/.test(version) ? Number(version) : Number.NaN },
+    );
+    refresh();
+    return { submissions, saved: true };
+  } catch (error) {
+    if (error instanceof InvalidSettingsError) {
+      return {
+        submissions,
+        error: error.fieldErrors.revealAt ?? error.message,
+      };
+    }
+    if (isPartyCameraError(error, "SettingsChanged")) {
+      return { submissions, error: error.message };
+    }
+    console.error("updateRevealAtAction failed", error);
+    return { submissions, error: "Er ging iets mis. Probeer het opnieuw." };
   }
 }
 

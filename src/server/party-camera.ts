@@ -1,7 +1,13 @@
 import "server-only";
 
 import { createClient } from "@supabase/supabase-js";
-import { createPartyCamera, systemClock, type PartyCamera } from "@/party-camera";
+import {
+  createPartyCamera,
+  systemClock,
+  type GuestPhotoVariant,
+  type PartyCamera,
+  type RenderedPhoto,
+} from "@/party-camera";
 import {
   SupabaseBlobStore,
   SupabaseRepository,
@@ -18,10 +24,20 @@ type HostOperation =
   | "unhidePhoto"
   | "deletePhoto"
   | "renameGuest"
+  | "setRevealOverride"
   | "renderPhoto";
 
-/** What anyone (Gasten, the join page) may call, without an admin session. */
-export type PublicPartyCamera = Omit<PartyCamera, HostOperation>;
+/**
+ * What anyone (Gasten, the join page, the Galerij) may call, without an admin
+ * session. `renderPhoto` only as a guest: `thumb`/`display`, after the Reveal.
+ */
+export type PublicPartyCamera = Omit<PartyCamera, HostOperation> & {
+  renderPhoto(
+    photoId: string,
+    variant: GuestPhotoVariant,
+    options: { asHost: false },
+  ): Promise<RenderedPhoto>;
+};
 
 /** Everything, for a request with a verified admin session. */
 export type HostPartyCamera = PartyCamera;
@@ -43,12 +59,28 @@ function instancePartyCamera(): PartyCamera {
   return instance;
 }
 
+let publicInstance: PublicPartyCamera | undefined;
+
 /**
- * The PartyCamera without host operations. The type leaves them out, so the
- * only way to reach a host operation is {@link hostCamera}.
+ * The PartyCamera without host operations. Not just a narrower type: the
+ * object only has the public operations, and its `renderPhoto` always asks as
+ * a guest, so the only way to reach a host operation is {@link hostCamera}.
  */
 export function partyCamera(): PublicPartyCamera {
-  return instancePartyCamera();
+  if (!publicInstance) {
+    const camera = instancePartyCamera();
+    publicInstance = {
+      joinGuest: (name) => camera.joinGuest(name),
+      getGuest: (guestId) => camera.getGuest(guestId),
+      takeShot: (guestId, shotId, bytes) => camera.takeShot(guestId, shotId, bytes),
+      getSettings: () => camera.getSettings(),
+      getRevealState: () => camera.getRevealState(),
+      listGallery: (options) => camera.listGallery(options),
+      renderPhoto: (photoId, variant) => camera.renderPhoto(photoId, variant, { asHost: false }),
+      prepareDerivatives: (photoId) => camera.prepareDerivatives(photoId),
+    };
+  }
+  return publicInstance;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { Suspense, type CSSProperties } from "react";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { MAX_GUEST_NAME_LENGTH } from "@/party-camera";
 import { currentGuest } from "@/server/guest-session";
@@ -18,7 +19,8 @@ async function JoinScreen() {
   // A recognized Gast skips straight to the camera.
   if (await currentGuest()) redirect("/camera");
 
-  const settings = await partyCamera().getSettings();
+  const camera = partyCamera();
+  const [settings, reveal] = await Promise.all([camera.getSettings(), camera.getRevealState()]);
   const steps = [
     `Je krijgt een rolletje van ${settings.shotsPerGuest} foto's.`,
     "Je ziet je foto's niet meteen: geen preview, geen herkansing.",
@@ -52,6 +54,15 @@ async function JoinScreen() {
       </ol>
 
       <JoinForm maxLength={MAX_GUEST_NAME_LENGTH} />
+
+      {reveal.revealed && (
+        <p className="text-center text-stone-400">
+          De foto&apos;s zijn onthuld!{" "}
+          <Link href="/galerij" className="font-semibold text-accent underline underline-offset-4">
+            Bekijk de galerij
+          </Link>
+        </p>
+      )}
     </main>
   );
 }

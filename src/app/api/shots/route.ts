@@ -1,4 +1,4 @@
-import type { NextRequest } from "next/server";
+import { after, type NextRequest } from "next/server";
 import {
   isPartyCameraError,
   isShotId,
@@ -45,6 +45,13 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   try {
     const shot = await partyCamera().takeShot(guestId, shotId, bytes);
+    // Render the Galerij's thumb and display now, in the background, so the
+    // Reveal does not start with a burst of renders. Never affects this answer.
+    after(() =>
+      partyCamera()
+        .prepareDerivatives(shotId)
+        .catch((error) => console.error("prepareDerivatives failed", error)),
+    );
     return reply(200, { ok: true, ...shot });
   } catch (error) {
     if (isPartyCameraError(error, "RollFull")) {

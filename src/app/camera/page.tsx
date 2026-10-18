@@ -20,8 +20,8 @@ async function CameraScreen() {
 
   // Read fresh on every request (nothing here is cached), so settings the
   // Host changes show up on the next render.
-  const settings = await partyCamera().getSettings();
-  const revealAt = settings.revealAt?.toISOString() ?? null;
+  const camera = partyCamera();
+  const [settings, reveal] = await Promise.all([camera.getSettings(), camera.getRevealState()]);
 
   return (
     <main
@@ -38,7 +38,12 @@ async function CameraScreen() {
         shotsPerGuest={settings.shotsPerGuest}
         captureOpen={settings.captureOpen}
         viewId={crypto.randomUUID()}
-        revealAt={revealAt}
+        reveal={{
+          revealed: reveal.revealed,
+          // Only a Reveal that is still coming; a held-back one has no date.
+          revealAt:
+            reveal.reason === "pending" ? (reveal.revealAt?.toISOString() ?? null) : null,
+        }}
         maxLongSide={MAX_SHOT_LONG_SIDE}
         maxBytes={MAX_SHOT_BYTES}
       />

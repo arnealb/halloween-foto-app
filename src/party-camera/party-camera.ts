@@ -1,5 +1,7 @@
-import { PartyCameraError } from "./errors";
-import { normalizeShot, renderThumb } from "./image";
+import { createHash } from "node:crypto";
+import { InvalidSettingsError, PartyCameraError } from "./errors";
+import { normalizeShot, renderDerived, type DerivedVariant } from "./image";
+import { revealStateOf, type RevealState } from "./reveal";
 import { effectiveChanges, validateSettingsUpdate } from "./settings";
 import type {
   BlobStore,
@@ -11,6 +13,8 @@ import type {
   PartyCameraDeps,
   Photo,
   Repository,
+  RevealOverride,
+  SettingsChanges,
   SettingsUpdate,
 } from "./types";
 
@@ -83,6 +87,62 @@ export interface PartyCamera {
   /** The Event settings (title, Rolletje size, Reveal, watermark, ...). */
   getSettings(): Promise<EventSettings>;
 
+  /**
+   * Whether the Galerij is revealed now, and why. `revealed = override ===
+   * 'open' || (override === 'auto' && now >= revealAt)`; with `auto` and no
+   * `revealAt` it stays hidden (`pending`) until the Host forces it open.
+   */
+  getRevealState(): Promise<RevealState>;
+
+  /**
+   * One page of the Galerij: every photo that is not hidden (deleted ones are
+   * gone), oldest first, each with the name of the Gast who took it. With
+   * `guestId`: only that Gast's photos ("mijn foto's"). Pass the previous
+   * page's `nextCursor` as `cursor` for the next page; `nextCursor` is null on
+   * the last page. A malformed cursor yields an empty last page.
+   *
+   * Checked on every call, so closing the Galerij again takes effect at once.
+   * @throws PartyCameraError `NotRevealed` before the Reveal.
+   */
+  listGallery(options?: GalleryOptions): Promise<GalleryPage>;
+
+  /**
+   * The bytes of a photo.
+   *
+   * For the Host (`asHost: true`): any photo, hidden ones included, also
+   * before the Reveal, in every variant: `original` is the stored original
+   * byte for byte; `thumb` and `display` are clean (never watermarked).
+   *
+   * For Gasten and everyone else (`asHost: false`): only `thumb` and
+   * `display`, never `original`; only after the Reveal and only photos that
+   * are not hidden. Before the Reveal, for a hidden photo, an unknown photo
+   * and any other variant the failure is the same, so nothing tells whether a
+   * photo exists.
+   *
+   * Derived variants are rendered once and cached in the blob store under
+   * `derived/<photoId>/<variant>-<renderKey>.jpg`.
+   * @throws PartyCameraError `UnknownPhoto`
+   */
+  renderPhoto(
+    photoId: string,
+    variant: PhotoVariant,
+    options: { asHost: true },
+  ): Promise<RenderedPhoto>;
+  renderPhoto(
+    photoId: string,
+    variant: GuestPhotoVariant,
+    options: { asHost: false },
+  ): Promise<RenderedPhoto>;
+
+  /**
+   * Render and cache the derived variants of a photo ahead of time (`thumb`
+   * and `display` as the Galerij will ask for them, and the Host's thumb), so
+   * the Reveal does not start with a burst of renders. Returns nothing and
+   * reveals nothing; an unknown photo is simply skipped. Meant to run in the
+   * background after a Shot.
+   */
+  prepareDerivatives(photoId: string): Promise<void>;
+
   // -------------------------------------------------------------------------
   // Host operations. Callers must have verified the Host's session; the
   // server only hands these out behind the admin cookie (see src/server).
@@ -149,21 +209,52 @@ export interface PartyCamera {
   renameGuest(guestId: string, name: string): Promise<GuestWithRoll>;
 
   /**
-   * The bytes of a photo. `original` is the stored original; `thumb` a small
-   * JPEG, rendered once and cached in the blob store. For now only the Host
-   * may ask (`asHost: true`); the Galerij (Reveal) adds guest access and the
-   * `display` variant.
-   * @throws PartyCameraError `UnknownPhoto`
+   * The Host forces the Reveal: `open` ("nu onthullen"), `closed` ("verborgen
+   * houden", also after `revealAt`), or back to `auto` (the Reveal moment
+   * counts again). The requested value is the whole intent, so it is applied
+   * on top of any other settings change. Returns the resulting state.
+   * @throws InvalidSettingsError for any other value.
    */
-  renderPhoto(
-    photoId: string,
-    variant: PhotoVariant,
-    options: { asHost: true },
-  ): Promise<RenderedPhoto>;
+  setRevealOverride(override: RevealOverride): Promise<RevealState>;
 }
 
 /** A size/kind of photo bytes that {@link PartyCamera.renderPhoto} serves. */
-export type PhotoVariant = "original" | "thumb";
+export type PhotoVariant = "original" | DerivedVariant;
+
+/** The variants anyone but the Host may ask for. */
+export type GuestPhotoVariant = DerivedVariant;
+
+/** Most photos {@link PartyCamera.listGallery} returns per page. */
+export const MAX_GALLERY_PAGE_SIZE = 200;
+/** Photos per Galerij page when no `limit` is given. */
+export const DEFAULT_GALLERY_PAGE_SIZE = 60;
+
+/** Options of {@link PartyCamera.listGallery}. */
+export interface GalleryOptions {
+  /** Only this Gast's photos ("mijn foto's"). */
+  guestId?: string;
+  /** `nextCursor` of the previous page; absent for the first page. */
+  cursor?: string;
+  /** Photos per page, 1 to {@link MAX_GALLERY_PAGE_SIZE}. */
+  limit?: number;
+}
+
+/** A photo as everyone sees it in the Galerij. */
+export interface GalleryPhoto {
+  id: string;
+  /** Name of the Gast who took it (their current name). */
+  guestName: string;
+  width: number;
+  height: number;
+  takenAt: Date;
+}
+
+/** Result of {@link PartyCamera.listGallery}. */
+export interface GalleryPage {
+  photos: GalleryPhoto[];
+  /** Pass as `cursor` for the next page; null when this is the last page. */
+  nextCursor: string | null;
+}
 
 /** Bytes of one photo variant. */
 export interface RenderedPhoto {
@@ -213,16 +304,54 @@ export interface PhotosByTime {
 /**
  * Blob store key of a derived image of a photo. All derived images of one
  * photo share the folder `derived/<photoId>`, so deleting the photo can sweep
- * them without knowing every variant. `renderKey` names how it was rendered:
- * `plain` (no watermark) today; the watermark adds e.g. `wm-v<settingsVersion>`
- * so a settings change never serves a stale cache.
+ * them without knowing every variant. `renderKey` names how it was rendered,
+ * so a change in how it is rendered never serves a stale cache.
  */
 function derivedFolder(photoId: string): string {
   return `derived/${photoId}`;
 }
 
-function derivedKey(photoId: string, variant: Exclude<PhotoVariant, "original">, renderKey: string): string {
+function derivedKey(photoId: string, variant: DerivedVariant, renderKey: string): string {
   return `${derivedFolder(photoId)}/${variant}-${renderKey}.jpg`;
+}
+
+/** Render key of what the Host sees: always the clean photo. */
+const HOST_RENDER_KEY = "plain";
+
+/**
+ * Render key of the Galerij's derived images, from the settings they are
+ * rendered with. Without a watermark they are the clean photo (`plain`, the
+ * same cache as the Host's). With the watermark on: `wm-<hash>`, a short hash
+ * of the watermark fields ONLY, so a watermark change invalidates the cache
+ * by itself while any other settings change (Reveal, override, title, ...)
+ * keeps it. Deliberately not `settingsVersion`: that changes with every
+ * setting, and "nu onthullen" would then throw away every cached image at the
+ * very moment everyone opens the Galerij.
+ * THE SEAM FOR THE WATERMARK (ticket 07): render with the overlay whenever
+ * this key is not `plain`.
+ */
+function galleryRenderKey(
+  settings: Partial<
+    Pick<
+      EventSettings,
+      | "watermarkEnabled"
+      | "watermarkText"
+      | "watermarkLogoKey"
+      | "watermarkPosition"
+      | "watermarkScale"
+      | "watermarkOpacity"
+    >
+  >,
+): string {
+  if (settings.watermarkEnabled !== true) return "plain";
+  const fields = JSON.stringify([
+    settings.watermarkText ?? null,
+    settings.watermarkLogoKey ?? null,
+    settings.watermarkPosition ?? null,
+    settings.watermarkScale ?? null,
+    settings.watermarkOpacity ?? null,
+  ]);
+  return `wm-${createHash("sha256").update(fields).digest("hex").slice(0, 12)}`;
 }
 
 /** Result of {@link PartyCamera.takeShot}: the Rolletje after the Shot. */
@@ -240,6 +369,8 @@ class DefaultPartyCamera implements PartyCamera {
   private readonly blobStore: BlobStore;
   private readonly clock: Clock;
   private readonly newId: () => string;
+  /** Derived images being rendered right now, by blob key (see renderDerivedPhoto). */
+  private readonly rendering = new Map<string, Promise<RenderedPhoto>>();
 
   constructor(deps: PartyCameraDeps) {
     this.repository = deps.repository;
@@ -371,6 +502,46 @@ class DefaultPartyCamera implements PartyCamera {
     return this.repository.getSettings();
   }
 
+  async getRevealState(): Promise<RevealState> {
+    return revealStateOf(await this.repository.getSettings(), this.clock.now());
+  }
+
+  async setRevealOverride(override: RevealOverride): Promise<RevealState> {
+    const settings = await this.updateSettings({ revealOverride: override });
+    return revealStateOf(settings, this.clock.now());
+  }
+
+  async listGallery(options: GalleryOptions = {}): Promise<GalleryPage> {
+    await this.requireRevealed();
+    const { guestId, cursor } = options;
+    const limit = Math.min(
+      MAX_GALLERY_PAGE_SIZE,
+      Math.max(1, Math.floor(Number(options.limit ?? DEFAULT_GALLERY_PAGE_SIZE)) || 1),
+    );
+    const after = cursor === undefined ? undefined : decodeCursor(cursor);
+    if (after === null) return { photos: [], nextCursor: null };
+    if (guestId !== undefined && !isShotId(guestId)) return { photos: [], nextCursor: null };
+
+    // One more than asked, to know whether another page follows.
+    const records = await this.repository.listGalleryPhotos({
+      guestId: guestId?.toLowerCase(),
+      after,
+      limit: limit + 1,
+    });
+    const page = records.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      photos: page.map((record) => ({
+        id: record.id,
+        guestName: record.guestName,
+        width: record.width,
+        height: record.height,
+        takenAt: record.takenAt,
+      })),
+      nextCursor: records.length > limit && last ? encodeCursor(last) : null,
+    };
+  }
+
   async updateSettings(
     update: SettingsUpdate,
     options: { expectedVersion?: number } = {},
@@ -389,6 +560,7 @@ class DefaultPartyCamera implements PartyCamera {
       }
       const effective = effectiveChanges(changes, current);
       if (Object.keys(effective).length === 0) return current;
+      this.refusePastRevealAt(effective, current);
       // Compare-and-set against the version the changes were computed from.
       const result = await this.repository.updateSettings(effective, current.settingsVersion);
       if (result.status === "updated") return result.settings;
@@ -481,25 +653,95 @@ class DefaultPartyCamera implements PartyCamera {
   async renderPhoto(
     photoId: string,
     variant: PhotoVariant,
-    options: { asHost: true },
+    options: { asHost: boolean },
   ): Promise<RenderedPhoto> {
-    // Only the Host for now; the Galerij (Reveal) adds guest access. Checked
-    // at runtime too, in case an untyped caller passes something else.
-    if (options?.asHost !== true) {
-      throw new Error("renderPhoto: only the Host can see photos before the Galerij exists");
-    }
-    const photo = await this.findPhoto(photoId);
-    if (variant === "original") {
-      return { bytes: await this.readOriginal(photo), contentType: "image/jpeg" };
+    if (options?.asHost === true) {
+      const photo = await this.findPhoto(photoId);
+      if (variant === "original") {
+        return { bytes: await this.readOriginal(photo), contentType: "image/jpeg" };
+      }
+      if (!isDerivedVariant(variant)) throw unknownPhoto();
+      return this.renderDerivedPhoto(photo, variant, HOST_RENDER_KEY);
     }
 
-    const key = derivedKey(photo.id, variant, "plain");
-    const cached = await this.blobStore.get(key);
-    if (cached) return { bytes: cached, contentType: "image/jpeg" };
+    // Everyone else. Checked at runtime too, for untyped callers: anything
+    // that is not a derived variant is refused like an unknown photo. The
+    // Reveal is checked before the photo is even looked up.
+    if (!isDerivedVariant(variant)) throw unknownPhoto();
+    const settings = await this.repository.getSettings();
+    if (!revealStateOf(settings, this.clock.now()).revealed) throw unknownPhoto();
+    const photo = isShotId(photoId)
+      ? await this.repository.findPhoto(photoId.toLowerCase())
+      : null;
+    if (!photo || photo.hidden) throw unknownPhoto();
+    return this.renderDerivedPhoto(photo, variant, galleryRenderKey(settings));
+  }
 
-    const bytes = await renderThumb(await this.readOriginal(photo));
-    await this.cacheDerived(photo.id, key, bytes);
-    return { bytes, contentType: "image/jpeg" };
+  private async renderDerivedPhoto(
+    photo: Photo,
+    variant: DerivedVariant,
+    renderKey: string,
+  ): Promise<RenderedPhoto> {
+    const key = derivedKey(photo.id, variant, renderKey);
+    // One render per key at a time in this process: concurrent requests for
+    // the same image (everyone opening the Galerij at the Reveal) share it.
+    const inFlight = this.rendering.get(key);
+    if (inFlight) return inFlight;
+    const render = (async (): Promise<RenderedPhoto> => {
+      const cached = await this.blobStore.get(key);
+      if (cached) return { bytes: cached, contentType: "image/jpeg" };
+      const bytes = await renderDerived(await this.readOriginal(photo), variant);
+      await this.cacheDerived(photo.id, key, bytes);
+      return { bytes, contentType: "image/jpeg" };
+    })();
+    this.rendering.set(key, render);
+    try {
+      return await render;
+    } finally {
+      this.rendering.delete(key);
+    }
+  }
+
+  async prepareDerivatives(photoId: string): Promise<void> {
+    const [photo, settings] = await Promise.all([
+      isShotId(photoId) ? this.repository.findPhoto(photoId.toLowerCase()) : null,
+      this.repository.getSettings(),
+    ]);
+    if (!photo) return;
+    const galleryKey = galleryRenderKey(settings);
+    // Sequential: one sharp pipeline at a time is plenty in the background.
+    await this.renderDerivedPhoto(photo, "thumb", galleryKey);
+    await this.renderDerivedPhoto(photo, "display", galleryKey);
+    if (galleryKey !== HOST_RENDER_KEY) {
+      await this.renderDerivedPhoto(photo, "thumb", HOST_RENDER_KEY);
+    }
+  }
+
+  /**
+   * A new Reveal moment that has already passed, while the Reveal is
+   * automatic, would open the Galerij on the spot: almost always a typo (a
+   * wrong day), and not undoable for whoever looked. Refused; opening now is
+   * what "Nu onthullen" is for.
+   */
+  private refusePastRevealAt(effective: SettingsChanges, current: EventSettings): void {
+    const at = effective.revealAt;
+    if (!at) return;
+    const override = effective.revealOverride ?? current.revealOverride;
+    if (override === "auto" && at.getTime() <= this.clock.now().getTime()) {
+      throw new InvalidSettingsError({
+        revealAt:
+          "Dit moment is al voorbij: de galerij zou meteen opengaan. Kies een moment in de toekomst, of gebruik “Nu onthullen”.",
+      });
+    }
+  }
+
+  private async requireRevealed(): Promise<void> {
+    if (!(await this.getRevealState()).revealed) {
+      throw new PartyCameraError(
+        "NotRevealed",
+        "De foto's zijn nog niet onthuld.",
+      );
+    }
   }
 
   private async guestStats(): Promise<GuestStats[]> {
@@ -518,9 +760,7 @@ class DefaultPartyCamera implements PartyCamera {
     const photo = isShotId(photoId)
       ? await this.repository.findPhoto(photoId.toLowerCase())
       : null;
-    if (!photo) {
-      throw new PartyCameraError("UnknownPhoto", "Deze foto bestaat niet (meer).");
-    }
+    if (!photo) throw unknownPhoto();
     return photo;
   }
 
@@ -600,6 +840,27 @@ function normalizeGuestName(raw: unknown): string {
     );
   }
   return name;
+}
+
+function unknownPhoto(): PartyCameraError {
+  return new PartyCameraError("UnknownPhoto", "Deze foto bestaat niet (meer).");
+}
+
+function isDerivedVariant(value: unknown): value is DerivedVariant {
+  return value === "thumb" || value === "display";
+}
+
+/** Galerij cursor: the (takenAt, id) of a page's last photo, opaque to callers. */
+function encodeCursor(photo: { takenAt: Date; id: string }): string {
+  return Buffer.from(`${photo.takenAt.getTime()}.${photo.id}`, "utf8").toString("base64url");
+}
+
+/** The position a cursor names, or null if it is malformed. */
+function decodeCursor(cursor: string): { takenAt: Date; id: string } | null {
+  if (typeof cursor !== "string" || cursor.length > 200) return null;
+  const match = /^(\d{1,15})\.(.+)$/.exec(Buffer.from(cursor, "base64url").toString("utf8"));
+  if (!match || !isShotId(match[2])) return null;
+  return { takenAt: new Date(Number(match[1])), id: match[2].toLowerCase() };
 }
 
 function settingsChanged(): PartyCameraError {
