@@ -4,6 +4,7 @@ import type {
   Clock,
   EventSettings,
   Guest,
+  GuestWithPhotoCounts,
   Photo,
   Repository,
   ShotRecording,
@@ -120,6 +121,52 @@ export class InMemoryRepository implements Repository {
     return "recorded";
   }
 
+  async listGuests(): Promise<GuestWithPhotoCounts[]> {
+    return [...this.guests.values()]
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || compare(a.id, b.id))
+      .map((guest) => {
+        let photoCount = 0;
+        let hiddenCount = 0;
+        for (const photo of this.photoRecords.values()) {
+          if (photo.guestId !== guest.id) continue;
+          photoCount += 1;
+          if (photo.hidden) hiddenCount += 1;
+        }
+        return { ...guest, photoCount, hiddenCount };
+      });
+  }
+
+  async listPhotos(): Promise<Photo[]> {
+    return this.photos().sort(
+      (a, b) => a.takenAt.getTime() - b.takenAt.getTime() || compare(a.id, b.id),
+    );
+  }
+
+  async findPhoto(id: string): Promise<Photo | null> {
+    const photo = this.photoRecords.get(id);
+    return photo ? { ...photo } : null;
+  }
+
+  async setPhotoHidden(id: string, hidden: boolean): Promise<boolean> {
+    const photo = this.photoRecords.get(id);
+    if (!photo) return false;
+    photo.hidden = hidden;
+    return true;
+  }
+
+  // Like the SQL: only the photo row goes; the Gast's shots_taken and the
+  // stored reservation of the shot id stay.
+  async deletePhoto(id: string): Promise<boolean> {
+    return this.photoRecords.delete(id);
+  }
+
+  async renameGuest(id: string, name: string): Promise<boolean> {
+    const guest = this.guests.get(id);
+    if (!guest) return false;
+    guest.name = name;
+    return true;
+  }
+
   /** Recorded photos, for assertions in tests. */
   photos(): Photo[] {
     return [...this.photoRecords.values()].map((photo) => ({ ...photo }));
@@ -145,10 +192,21 @@ export class InMemoryBlobStore implements BlobStore {
     for (const key of keys) this.blobs.delete(key);
   }
 
+  async list(folder: string): Promise<string[]> {
+    const prefix = `${folder}/`;
+    return this.keys().filter(
+      (key) => key.startsWith(prefix) && !key.slice(prefix.length).includes("/"),
+    );
+  }
+
   /** Stored keys, for assertions in tests. */
   keys(): string[] {
     return [...this.blobs.keys()];
   }
+}
+
+function compare(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** A clock that only moves when told to. */

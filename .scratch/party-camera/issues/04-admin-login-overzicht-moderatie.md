@@ -4,12 +4,12 @@
 
 **Blocked by:** 02 (Shot nemen met rolletje-limiet)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Admin-login met het host-wachtwoord uit een env-variabele, een ondertekende httpOnly admin-cookie, en uitloggen
-- [ ] Alle host-operaties checken de admin-cookie server-side. Zonder cookie worden ze geweigerd.
-- [ ] PartyCamera: `getStats`, `listAllPhotos({ groupBy: 'guest' | 'time' })`, `hidePhoto` / `unhidePhoto`, `deletePhoto` (verwijdert record + bytes) en `renameGuest`, allemaal met tests
-- [ ] `renderPhoto(photoId, 'original' | 'thumb', { asHost: true })` levert bytes aan de host. Thumbnails worden met sharp gemaakt en gecachet in de blob store. Er wordt geen publieke bucket-URL gebruikt.
-- [ ] Tests: verbergen/verwijderen verlaagt `shots_taken` niet. Een verwijderde foto is weg uit de lijsten en de blob store.
-- [ ] De admin-UI toont stats, een fotogrid per gast en op tijd, een lightbox, verberg- en verwijderknoppen (met een bevestiging in de pagina) en gast hernoemen
-- [ ] Handmatig geverifieerd: als gast foto's nemen → in de admin zien → verbergen/verwijderen
+- [x] Admin-login met het host-wachtwoord uit een env-variabele, een ondertekende httpOnly admin-cookie, en uitloggen
+- [x] Alle host-operaties checken de admin-cookie server-side. Zonder cookie worden ze geweigerd.
+- [x] PartyCamera: `getStats`, `listAllPhotos({ groupBy: 'guest' | 'time' })`, `hidePhoto` / `unhidePhoto`, `deletePhoto` (verwijdert record + bytes) en `renameGuest`, allemaal met tests
+- [x] `renderPhoto(photoId, 'original' | 'thumb', { asHost: true })` levert bytes aan de host. Thumbnails worden met sharp gemaakt en gecachet in de blob store. Er wordt geen publieke bucket-URL gebruikt.
+- [x] Tests: verbergen/verwijderen verlaagt `shots_taken` niet. Een verwijderde foto is weg uit de lijsten en de blob store.
+- [x] De admin-UI toont stats, een fotogrid per gast en op tijd, een lightbox, verberg- en verwijderknoppen (met een bevestiging in de pagina) en gast hernoemen
+- [x] Handmatig geverifieerd: als gast foto's nemen → in de admin zien → verbergen/verwijderen

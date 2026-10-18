@@ -78,3 +78,26 @@ export async function normalizeShot(input: Uint8Array): Promise<NormalizedImage>
 function invalid(message: string): PartyCameraError {
   return new PartyCameraError("InvalidImage", message);
 }
+
+/** Long side of a thumbnail: sharp on a 3x phone screen in a 3-column grid. */
+export const THUMB_LONG_SIDE = 480;
+
+/** JPEG quality of thumbnails: small files matter more than detail here. */
+const THUMB_JPEG_QUALITY = 72;
+
+/**
+ * Render the thumbnail of a stored original (already oriented and stripped):
+ * scaled to fit {@link THUMB_LONG_SIDE}, never enlarged, re-encoded as JPEG.
+ */
+export async function renderThumb(original: Uint8Array): Promise<Uint8Array> {
+  const data = await sharp(original, { limitInputPixels: MAX_INPUT_PIXELS })
+    .resize({
+      width: THUMB_LONG_SIDE,
+      height: THUMB_LONG_SIDE,
+      fit: "inside",
+      withoutEnlargement: true,
+    })
+    .jpeg({ quality: THUMB_JPEG_QUALITY, mozjpeg: true })
+    .toBuffer();
+  return new Uint8Array(data);
+}
