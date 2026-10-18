@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { cacheTag } from "next/cache";
+import { DEFAULT_EVENT_SETTINGS } from "@/party-camera";
+import { isSupabaseConfigured } from "@/server/env";
 import { partyCamera } from "@/server/party-camera";
 import { shortName } from "./pwa";
 
@@ -28,11 +30,17 @@ export const PARTY_METADATA_TAG = "party-metadata";
  * settings) so it resolves in the prerendered shell and lands in `<head>`.
  * Uncached, it would stream into `<body>`, where Chrome doesn't look for
  * `<link rel="manifest">`, so the app couldn't be installed.
+ *
+ * Without Supabase configured (a build without the env variables) it uses the
+ * default title instead of failing the build; the cache entry is refreshed
+ * once the settings can be read (cache lifetime, or when the Host saves).
  */
 export async function partyMetadata(): Promise<Metadata> {
   "use cache";
   cacheTag(PARTY_METADATA_TAG);
-  const { title } = await partyCamera().getSettings();
+  const { title } = isSupabaseConfigured()
+    ? await partyCamera().getSettings()
+    : DEFAULT_EVENT_SETTINGS;
   return {
     title,
     // Replaces (not merges with) the layout's appleWebApp, so repeat it all.

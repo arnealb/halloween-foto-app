@@ -4,11 +4,11 @@
 
 **Blocked by:** 01–10 (alle voorgaande tickets)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] De README vervangt de scaffold-tekst: wat de app doet, setup van Supabase (project, migratie, bucket), env-variabelen, lokaal draaien, tests draaien en deploy op Vercel
-- [ ] De projectnaam in `package.json` is hernoemd van de scaffold-naam
-- [ ] Een sectie over opslag en kosten: ongeveer 50 gasten × 50 foto's ≈ 3,75 GB, de limiet van de gratis tier, en opties (Pro-plan of lagere resolutie)
-- [ ] Een checklist om vóór het feest te testen
-- [ ] `npm run build`, `npm run lint` en `npm test` slagen
+- [x] De README vervangt de scaffold-tekst: wat de app doet, setup van Supabase (project, migratie, bucket), env-variabelen, lokaal draaien, tests draaien en deploy op Vercel
+- [x] De projectnaam in `package.json` is hernoemd van de scaffold-naam
+- [x] Een sectie over opslag en kosten: ongeveer 50 gasten × 50 foto's ≈ 3,75 GB, de limiet van de gratis tier, en opties (Pro-plan of lagere resolutie)
+- [x] Een checklist om vóór het feest te testen
+- [x] `npm run build`, `npm run lint` en `npm test` slagen
 - [ ] Handmatig geverifieerd: een verse deploy op Vercel volgens de README → volledige flow (aanmelden → shots → admin → reveal → galerij → zip)
