@@ -10,6 +10,7 @@ const SECTIONS = [
   { href: "/admin/instellingen", label: "Instellingen" },
   { href: "/admin/watermark", label: "Watermark" },
   { href: "/admin/downloads", label: "Downloads" },
+  { href: "/admin/qr", label: "QR-code" },
 ] as const;
 
 export function AdminNav() {
