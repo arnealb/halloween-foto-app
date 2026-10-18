@@ -108,6 +108,22 @@ describe("watermark on the Galerij's images", () => {
     expect((await env.camera.renderPhoto(env.id, "thumb", HOST)).bytes).toEqual(hostThumb);
   });
 
+  it("gives the Host the Galerij's watermarked version when asked", async () => {
+    const env = await withPhoto({ watermarkEnabled: true, watermarkText: "Arne 25" });
+    const clean = (await env.camera.renderPhoto(env.id, "display", HOST)).bytes;
+    const asShown = (await env.camera.renderPhoto(env.id, "display", GUEST)).bytes;
+    const marked = await env.camera.renderPhoto(env.id, "display", { asHost: true, watermarked: true });
+    expect(marked.bytes).toEqual(asShown);
+    expect(marked.bytes).not.toEqual(clean);
+  });
+
+  it("never stores the full-size shareable version", async () => {
+    const env = await withPhoto({ watermarkEnabled: true, watermarkText: "Arne 25" });
+    await env.camera.renderPhoto(env.id, "shareable", GUEST);
+    await env.camera.renderPhoto(env.id, "shareable", HOST);
+    expect(env.blobStore.keys().filter((k) => k.includes("shareable"))).toEqual([]);
+  });
+
   it("has no overlay when the watermark is off, or on with nothing to draw", async () => {
     const env = await withPhoto({ watermarkText: "Arne 25" });
     const hostThumb = (await env.camera.renderPhoto(env.id, "display", HOST)).bytes;

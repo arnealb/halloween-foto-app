@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { loadMorePhotos } from "./actions";
 import type { ViewPage, ViewPhoto } from "./gallery-data";
+import { PhotoActions } from "../photo-actions";
 import { galleryPhotoUrl } from "./photo-url";
 
 /**
@@ -263,6 +264,15 @@ function Lightbox({
           side="right"
           disabled={!hasNext || (next === null && loading)}
           onClick={goNext}
+        />
+      </div>
+
+      <div className="px-4 pt-3 pb-4">
+        <PhotoActions
+          fileName={photo.fileName}
+          // What the lightbox already shows (watermarked, phone-sized, cached).
+          shareUrl={galleryPhotoUrl(photo.id, "display")}
+          downloads={[{ label: "Downloaden", href: galleryPhotoUrl(photo.id, "shareable") }]}
         />
       </div>
     </div>

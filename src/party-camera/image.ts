@@ -86,13 +86,22 @@ export const THUMB_LONG_SIDE = 480;
 /** Long side of the `display` variant: the big view in the Galerij. */
 export const DISPLAY_LONG_SIDE = 1600;
 
-/** A size of photo derived from the original (never the original itself). */
-export type DerivedVariant = "thumb" | "display";
+/**
+ * A size of photo derived from the original (never the original itself).
+ * `shareable`: the full original resolution with the Galerij's watermark, for
+ * downloading, sharing, posting and printing.
+ */
+export type DerivedVariant = "thumb" | "display" | "shareable";
 
-const DERIVED: Record<DerivedVariant, { longSide: number; quality: number }> = {
+const DERIVED: Record<DerivedVariant, { longSide: number; quality: number; mozjpeg: boolean }> = {
   // Small files matter more than detail in a grid of hundreds.
-  thumb: { longSide: THUMB_LONG_SIDE, quality: 72 },
-  display: { longSide: DISPLAY_LONG_SIDE, quality: 80 },
+  thumb: { longSide: THUMB_LONG_SIDE, quality: 72, mozjpeg: true },
+  display: { longSide: DISPLAY_LONG_SIDE, quality: 80, mozjpeg: true },
+  // Originals are never larger than this, so nothing is scaled; the quality
+  // of the stored originals, so printing loses nothing visible. Plain
+  // libjpeg-turbo: several times faster than mozjpeg at full size (a zip
+  // export renders hundreds of these in one request), for ~10% more bytes.
+  shareable: { longSide: MAX_SHOT_LONG_SIDE, quality: JPEG_QUALITY, mozjpeg: false },
 };
 
 /**
@@ -107,7 +116,7 @@ export async function renderDerived(
   variant: DerivedVariant,
   watermark: WatermarkSpec | null = null,
 ): Promise<Uint8Array> {
-  const { longSide, quality } = DERIVED[variant];
+  const { longSide, quality, mozjpeg } = DERIVED[variant];
   const resized = sharp(original, { limitInputPixels: MAX_INPUT_PIXELS }).resize({
     width: longSide,
     height: longSide,
@@ -115,7 +124,7 @@ export async function renderDerived(
     withoutEnlargement: true,
   });
   if (!watermark) {
-    return new Uint8Array(await resized.jpeg({ quality, mozjpeg: true }).toBuffer());
+    return new Uint8Array(await resized.jpeg({ quality, mozjpeg }).toBuffer());
   }
   // The overlay is laid out on the final size, so resize first.
   const { data, info } = await resized.raw().toBuffer({ resolveWithObject: true });
@@ -123,5 +132,5 @@ export async function renderDerived(
   const overlay = await watermarkOverlay(watermark, info.width, info.height);
   const image = sharp(data, raw);
   if (overlay) image.composite([{ input: overlay.svg, left: overlay.left, top: overlay.top }]);
-  return new Uint8Array(await image.jpeg({ quality, mozjpeg: true }).toBuffer());
+  return new Uint8Array(await image.jpeg({ quality, mozjpeg }).toBuffer());
 }

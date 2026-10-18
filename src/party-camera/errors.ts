@@ -18,6 +18,8 @@ import type { SettingsUpdate } from "./types";
  *   (changed elsewhere in the meantime); nothing changed. Reload and retry.
  * - `PreviewSuperseded`: a watermark preview overtaken by a newer request
  *   while it waited for its turn; nothing was rendered.
+ * - `InvalidExportPart`: a zip export asked for a part that does not exist
+ *   (or for an unknown kind of export).
  * - `InvalidSettings`: a settings update with invalid values; nothing changed.
  *   Thrown as {@link InvalidSettingsError}, which says what is wrong per field.
  */
@@ -33,7 +35,8 @@ export type PartyCameraErrorCode =
   | "NotRevealed"
   | "InvalidSettings"
   | "SettingsChanged"
-  | "PreviewSuperseded";
+  | "PreviewSuperseded"
+  | "InvalidExportPart";
 
 export class PartyCameraError extends Error {
   readonly code: PartyCameraErrorCode;
