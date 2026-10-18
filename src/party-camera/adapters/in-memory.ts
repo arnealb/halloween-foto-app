@@ -4,12 +4,15 @@ import type {
   Clock,
   EventSettings,
   Guest,
+  Photo,
   Repository,
+  ShotReservation,
 } from "../types";
 
 /** Repository kept in memory. Used by tests; mirrors the Supabase semantics. */
 export class InMemoryRepository implements Repository {
   private readonly guests = new Map<string, Guest>();
+  private readonly photoRecords = new Map<string, Photo>();
   private settings: EventSettings;
 
   constructor(settings: Partial<EventSettings> = {}) {
@@ -30,6 +33,40 @@ export class InMemoryRepository implements Repository {
 
   async getSettings(): Promise<EventSettings> {
     return { ...this.settings };
+  }
+
+  // Check-and-increment runs synchronously (no await in between), so like the
+  // single conditional UPDATE in Postgres it is atomic with respect to other
+  // concurrent calls.
+  async reserveShot(guestId: string): Promise<ShotReservation> {
+    const guest = this.guests.get(guestId);
+    if (!guest) return { status: "unknown-guest" };
+    const { shotsPerGuest } = this.settings;
+    if (guest.shotsTaken >= shotsPerGuest) {
+      return { status: "roll-full", shotsTaken: guest.shotsTaken, shotsPerGuest };
+    }
+    guest.shotsTaken += 1;
+    return { status: "reserved", shotsTaken: guest.shotsTaken, shotsPerGuest };
+  }
+
+  async releaseShot(guestId: string): Promise<void> {
+    const guest = this.guests.get(guestId);
+    if (guest && guest.shotsTaken > 0) guest.shotsTaken -= 1;
+  }
+
+  async insertPhoto(photo: Photo): Promise<void> {
+    if (!this.guests.has(photo.guestId)) {
+      throw new Error(`Guest ${photo.guestId} does not exist`);
+    }
+    if (this.photoRecords.has(photo.id)) {
+      throw new Error(`Photo ${photo.id} already exists`);
+    }
+    this.photoRecords.set(photo.id, { ...photo });
+  }
+
+  /** Recorded photos, for assertions in tests. */
+  photos(): Photo[] {
+    return [...this.photoRecords.values()].map((photo) => ({ ...photo }));
   }
 }
 
