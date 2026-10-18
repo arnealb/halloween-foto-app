@@ -8,7 +8,9 @@ import type {
   Photo,
   Repository,
   RevealOverride,
+  ShotRecording,
   ShotReservation,
+  ShotReservationRequest,
   WatermarkPosition,
 } from "../types";
 
@@ -105,49 +107,75 @@ export class SupabaseRepository implements Repository {
     return toSettings(data);
   }
 
-  async reserveShot(guestId: string): Promise<ShotReservation> {
+  async reserveShot({
+    guestId,
+    shotId,
+    attemptId,
+    now,
+    staleBefore,
+  }: ShotReservationRequest): Promise<ShotReservation> {
     if (!UUID_RE.test(guestId)) return { status: "unknown-guest" };
-    const { data, error } = await this.db.rpc("reserve_shot", { p_guest_id: guestId });
+    const { data, error } = await this.db.rpc("reserve_shot", {
+      p_guest_id: guestId,
+      p_shot_id: shotId,
+      p_attempt_id: attemptId,
+      p_now: now.toISOString(),
+      p_stale_before: staleBefore.toISOString(),
+    });
     if (error) throw new Error(`reserveShot failed: ${error.message}`);
     return toShotReservation(data as ReserveShotResult);
   }
 
-  async releaseShot(guestId: string): Promise<void> {
-    if (!UUID_RE.test(guestId)) return;
-    const { error } = await this.db.rpc("release_shot", { p_guest_id: guestId });
+  async releaseShot(shotId: string, attemptId: string): Promise<boolean> {
+    const { data, error } = await this.db.rpc("release_shot", {
+      p_shot_id: shotId,
+      p_attempt_id: attemptId,
+    });
     if (error) throw new Error(`releaseShot failed: ${error.message}`);
+    return data === true;
   }
 
-  async insertPhoto(photo: Photo): Promise<void> {
-    const { error } = await this.db.from("photos").insert({
-      id: photo.id,
-      guest_id: photo.guestId,
-      storage_key: photo.storageKey,
-      width: photo.width,
-      height: photo.height,
-      taken_at: photo.takenAt.toISOString(),
-      hidden: photo.hidden,
+  async recordShot(photo: Photo, attemptId: string): Promise<ShotRecording> {
+    const { data, error } = await this.db.rpc("record_shot", {
+      p_shot_id: photo.id,
+      p_guest_id: photo.guestId,
+      p_attempt_id: attemptId,
+      p_storage_key: photo.storageKey,
+      p_width: photo.width,
+      p_height: photo.height,
+      p_taken_at: photo.takenAt.toISOString(),
     });
-    if (error) throw new Error(`insertPhoto failed: ${error.message}`);
+    if (error) throw new Error(`recordShot failed: ${error.message}`);
+    if (data !== "recorded" && data !== "already-stored" && data !== "not-reserved") {
+      throw new Error(`record_shot returned an unexpected result: ${JSON.stringify(data)}`);
+    }
+    return data;
   }
 }
 
-/** JSON returned by the `reserve_shot` Postgres function (0002 migration). */
+/** JSON returned by the `reserve_shot` Postgres function (0005 migration). */
 type ReserveShotResult =
-  | { status: "reserved" | "roll-full"; shots_taken: number; shots_per_guest: number }
-  | { status: "unknown-guest" };
+  | {
+      status: "reserved" | "roll-full" | "already-stored";
+      shots_taken: number;
+      shots_per_guest: number;
+    }
+  | { status: "unknown-guest" | "in-progress" | "foreign-shot" };
 
 function toShotReservation(result: ReserveShotResult): ShotReservation {
   switch (result?.status) {
     case "reserved":
     case "roll-full":
+    case "already-stored":
       return {
         status: result.status,
         shotsTaken: result.shots_taken,
         shotsPerGuest: result.shots_per_guest,
       };
     case "unknown-guest":
-      return { status: "unknown-guest" };
+    case "in-progress":
+    case "foreign-shot":
+      return { status: result.status };
     default:
       throw new Error(`reserve_shot returned an unexpected result: ${JSON.stringify(result)}`);
   }

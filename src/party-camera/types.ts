@@ -35,7 +35,11 @@ export interface GuestWithRoll extends Guest {
 export interface Photo {
   id: string;
   guestId: string;
-  /** BlobStore key of the normalized original (`originals/<guestId>/<photoId>.jpg`). */
+  /**
+   * BlobStore key of the normalized original
+   * (`originals/<guestId>/<photoId>-<attemptId>.jpg`: unique per upload attempt,
+   * so cleaning up one attempt never touches the bytes of another).
+   */
   storageKey: string;
   width: number;
   height: number;
@@ -44,14 +48,52 @@ export interface Photo {
   hidden: boolean;
 }
 
+/** What {@link Repository.reserveShot} is asked to do. */
+export interface ShotReservationRequest {
+  guestId: string;
+  /** Client-generated id of this Shot (lowercase UUID); becomes the photo id. */
+  shotId: string;
+  /** Id of this one attempt to take the Shot; only it can release its reservation. */
+  attemptId: string;
+  now: Date;
+  /**
+   * A pending reservation of the same Shot made before this moment belongs to
+   * an attempt that died (e.g. a killed server function). It is taken over by
+   * this attempt instead of counting the Shot again.
+   */
+  staleBefore: Date;
+}
+
 /** Outcome of {@link Repository.reserveShot}. */
 export type ShotReservation =
-  /** One shot reserved; `shotsTaken` already includes it. */
+  /**
+   * The Shot is reserved for this attempt; `shotsTaken` includes it. Either a
+   * fresh reservation (one shot taken off the Rolletje) or a takeover of a
+   * stale pending one (already counted, so nothing is taken again).
+   */
   | { status: "reserved"; shotsTaken: number; shotsPerGuest: number }
   /** The Rolletje was already full; nothing changed. */
   | { status: "roll-full"; shotsTaken: number; shotsPerGuest: number }
   /** No Gast with this id; nothing changed. */
-  | { status: "unknown-guest" };
+  | { status: "unknown-guest" }
+  /** This Shot was taken and stored before (a retried upload); nothing changed. */
+  | { status: "already-stored"; shotsTaken: number; shotsPerGuest: number }
+  /** Another, still live attempt is storing this Shot right now; nothing changed. */
+  | { status: "in-progress" }
+  /** The shot id belongs to a different Gast; nothing changed. */
+  | { status: "foreign-shot" };
+
+/** Outcome of {@link Repository.recordShot}. */
+export type ShotRecording =
+  /** This attempt's photo is recorded and its Shot marked stored. */
+  | "recorded"
+  /** Another attempt already stored this Shot; nothing changed. */
+  | "already-stored"
+  /**
+   * This attempt no longer holds the Shot (released, or taken over by a retry
+   * after it was presumed dead); nothing recorded.
+   */
+  | "not-reserved";
 
 export type RevealOverride = "auto" | "open" | "closed";
 export type WatermarkPosition =
@@ -100,21 +142,33 @@ export interface Repository {
   getSettings(): Promise<EventSettings>;
 
   /**
-   * Atomically take one shot off the Gast's Rolletje: increment `shotsTaken`
-   * only if it is below the Event's `shotsPerGuest`. Concurrent calls must
-   * never push `shotsTaken` past the limit (a single conditional update;
-   * Postgres function `reserve_shot`).
+   * Atomically reserve the Shot `shotId` on the Gast's Rolletje. Keyed by the
+   * shot id, so a retried upload never counts twice:
+   * - a new shot id takes one shot off the Rolletje, only while `shotsTaken`
+   *   is below the Event's `shotsPerGuest` (concurrent calls never pass it);
+   * - a shot id that is already stored, or pending for a live attempt, changes
+   *   nothing; a stale pending one is taken over (see
+   *   {@link ShotReservationRequest.staleBefore}).
+   * Postgres function `reserve_shot`; uniqueness enforced by the primary key of
+   * `shot_reservations`.
    */
-  reserveShot(guestId: string): Promise<ShotReservation>;
+  reserveShot(request: ShotReservationRequest): Promise<ShotReservation>;
 
   /**
-   * Undo one {@link reserveShot} after the Shot could not be stored
-   * (decrement `shotsTaken`, never below 0). Postgres function `release_shot`.
+   * Undo the reservation made by attempt `attemptId` after the Shot could not
+   * be stored: drop the pending reservation and give the shot back. A no-op if
+   * that attempt no longer holds it (taken over, or already stored). Postgres
+   * function `release_shot`.
+   * @returns whether a pending reservation was released.
    */
-  releaseShot(guestId: string): Promise<void>;
+  releaseShot(shotId: string, attemptId: string): Promise<boolean>;
 
-  /** Record a stored Shot. */
-  insertPhoto(photo: Photo): Promise<void>;
+  /**
+   * Record a stored Shot (`photo.id` is the shot id) and mark its reservation
+   * stored, atomically, but only for attempt `attemptId` while it holds the
+   * pending reservation. Postgres function `record_shot`.
+   */
+  recordShot(photo: Photo, attemptId: string): Promise<ShotRecording>;
 }
 
 /** Private byte storage (originals, derived images, watermark logos). */

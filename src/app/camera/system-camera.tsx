@@ -38,7 +38,7 @@ export function SystemCamera({ onCapture, disabled }: CaptureSourceProps) {
         type="button"
         disabled={disabled}
         onClick={() => inputRef.current?.click()}
-        aria-label="Neem een foto"
+        aria-label="Neem een foto met de camera-app"
         className="flex size-24 items-center justify-center rounded-full border-4 border-stone-200 bg-transparent p-1.5 transition active:scale-95 disabled:opacity-40"
       >
         <span className="size-full rounded-full bg-accent" />

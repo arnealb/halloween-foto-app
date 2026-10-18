@@ -4,12 +4,12 @@
 
 **Blocked by:** 02 (Shot nemen met rolletje-limiet)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Live zoeker via `getUserMedia`, standaard de achtercamera, met een knop om te wisselen tussen voor en achter
-- [ ] Afdrukken pakt een frame en encodeert het als JPEG (lange zijde ≤ ~2560px, kwaliteit ~0,85). De foto wordt nergens getoond.
-- [ ] Flits-animatie en (waar ondersteund) trilling bij afdrukken
-- [ ] Een in-memory upload-wachtrij met retries en exponentiële backoff, plus de indicator "nog X aan het uploaden" en een waarschuwing bij het sluiten van de pagina tijdens het uploaden
-- [ ] De teller is gebaseerd op het antwoord van de server. Een geweigerd shot (`RollFull`) toont "rolletje vol".
-- [ ] Bij geweigerde camera-toegang verschijnt uitleg per platform (iOS/Android) en een knop voor de systeemcamera-fallback
+- [x] Live zoeker via `getUserMedia`, standaard de achtercamera, met een knop om te wisselen tussen voor en achter
+- [x] Afdrukken pakt een frame en encodeert het als JPEG (lange zijde ≤ ~2560px, kwaliteit ~0,85). De foto wordt nergens getoond.
+- [x] Flits-animatie en (waar ondersteund) trilling bij afdrukken
+- [x] Een in-memory upload-wachtrij met retries en exponentiële backoff, plus de indicator "nog X aan het uploaden" en een waarschuwing bij het sluiten van de pagina tijdens het uploaden
+- [x] De teller is gebaseerd op het antwoord van de server. Een geweigerd shot (`RollFull`) toont "rolletje vol".
+- [x] Bij geweigerde camera-toegang verschijnt uitleg per platform (iOS/Android) en een knop voor de systeemcamera-fallback
 - [ ] Handmatig geverifieerd op iOS Safari en Android Chrome: zoeker, wisselen, snel afdrukken, en uploads tijdens tijdelijke vliegtuigmodus

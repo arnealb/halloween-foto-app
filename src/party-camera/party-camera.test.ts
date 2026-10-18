@@ -6,9 +6,11 @@ import {
   isPartyCameraError,
   MAX_GUEST_NAME_LENGTH,
   MAX_SHOT_BYTES,
+  PENDING_SHOT_TIMEOUT_MS,
   type BlobStore,
   type EventSettings,
   type Photo,
+  type ShotRecording,
 } from "@/party-camera";
 import {
   FixedClock,
@@ -26,6 +28,11 @@ function setup(
   const clock = new FixedClock("2026-10-18T20:00:00Z");
   const camera = createPartyCamera({ repository, blobStore, clock });
   return { camera, clock, repository, blobStore };
+}
+
+/** A fresh shot id, as the camera generates one per photo. */
+function shotId(): string {
+  return crypto.randomUUID();
 }
 
 /** A plain JPEG, as a phone would upload it. */
@@ -148,7 +155,7 @@ describe("takeShot", () => {
     const { camera, repository, blobStore } = setup();
     const guest = await camera.joinGuest("Tom");
 
-    const result = await camera.takeShot(guest.id, await photoBytes());
+    const result = await camera.takeShot(guest.id, shotId(), await photoBytes());
 
     expect(result).toEqual({ shotsRemaining: 49, shotsPerGuest: 50 });
     expect((await camera.getGuest(guest.id)).shotsRemaining).toBe(49);
@@ -161,7 +168,7 @@ describe("takeShot", () => {
       hidden: false,
       takenAt: new Date("2026-10-18T20:00:00Z"),
     });
-    expect(photo.storageKey).toBe(`originals/${guest.id}/${photo.id}.jpg`);
+    expect(photo.storageKey.startsWith(`originals/${guest.id}/${photo.id}-`)).toBe(true);
     expect((blobStore as InMemoryBlobStore).keys()).toEqual([photo.storageKey]);
   });
 
@@ -172,11 +179,11 @@ describe("takeShot", () => {
 
     const remaining = [];
     for (let i = 0; i < 3; i++) {
-      remaining.push((await camera.takeShot(guest.id, bytes)).shotsRemaining);
+      remaining.push((await camera.takeShot(guest.id, shotId(), bytes)).shotsRemaining);
     }
 
     expect(remaining).toEqual([2, 1, 0]);
-    await expectFailure(camera.takeShot(guest.id, bytes), "RollFull");
+    await expectFailure(camera.takeShot(guest.id, shotId(), bytes), "RollFull");
     expect((await camera.getGuest(guest.id)).shotsRemaining).toBe(0);
     expect(repository.photos()).toHaveLength(3);
   });
@@ -187,7 +194,7 @@ describe("takeShot", () => {
     const bytes = await photoBytes();
 
     const results = await Promise.allSettled(
-      Array.from({ length: 20 }, () => camera.takeShot(guest.id, bytes)),
+      Array.from({ length: 20 }, () => camera.takeShot(guest.id, shotId(), bytes)),
     );
 
     const succeeded = results.filter((r) => r.status === "fulfilled");
@@ -208,10 +215,10 @@ describe("takeShot", () => {
     const sara = await camera.joinGuest("Sara");
     const bytes = await photoBytes();
 
-    await camera.takeShot(tom.id, bytes);
+    await camera.takeShot(tom.id, shotId(), bytes);
 
-    await expectFailure(camera.takeShot(tom.id, bytes), "RollFull");
-    await expect(camera.takeShot(sara.id, bytes)).resolves.toEqual({
+    await expectFailure(camera.takeShot(tom.id, shotId(), bytes), "RollFull");
+    await expect(camera.takeShot(sara.id, shotId(), bytes)).resolves.toEqual({
       shotsRemaining: 0,
       shotsPerGuest: 1,
     });
@@ -222,7 +229,7 @@ describe("takeShot", () => {
     const { camera, repository } = setup({}, { blobStore: failing });
     const guest = await camera.joinGuest("Tom");
 
-    await expect(camera.takeShot(guest.id, await photoBytes())).rejects.toThrow(
+    await expect(camera.takeShot(guest.id, shotId(), await photoBytes())).rejects.toThrow(
       "storage down",
     );
 
@@ -230,7 +237,7 @@ describe("takeShot", () => {
     expect(repository.photos()).toHaveLength(0);
 
     failing.failing = false;
-    await expect(camera.takeShot(guest.id, await photoBytes())).resolves.toEqual({
+    await expect(camera.takeShot(guest.id, shotId(), await photoBytes())).resolves.toEqual({
       shotsRemaining: 49,
       shotsPerGuest: 50,
     });
@@ -242,7 +249,7 @@ describe("takeShot", () => {
     const { camera } = setup({}, { repository, blobStore });
     const guest = await camera.joinGuest("Tom");
 
-    await expect(camera.takeShot(guest.id, await photoBytes())).rejects.toThrow(
+    await expect(camera.takeShot(guest.id, shotId(), await photoBytes())).rejects.toThrow(
       "database down",
     );
 
@@ -255,30 +262,30 @@ describe("takeShot", () => {
     failing.failing = false;
     const { camera } = setup({ shotsPerGuest: 2 }, { blobStore: failing });
     const guest = await camera.joinGuest("Tom");
-    await camera.takeShot(guest.id, await photoBytes());
+    await camera.takeShot(guest.id, shotId(), await photoBytes());
 
     // The last shot's upload fails: its reservation is released, nothing more.
     failing.failing = true;
-    await expect(camera.takeShot(guest.id, await photoBytes())).rejects.toThrow("storage down");
+    await expect(camera.takeShot(guest.id, shotId(), await photoBytes())).rejects.toThrow("storage down");
     expect((await camera.getGuest(guest.id)).shotsTaken).toBe(1);
 
     // The shot that was given back can be taken once, and then the Rolletje is full.
     failing.failing = false;
-    await expect(camera.takeShot(guest.id, await photoBytes())).resolves.toEqual({
+    await expect(camera.takeShot(guest.id, shotId(), await photoBytes())).resolves.toEqual({
       shotsRemaining: 0,
       shotsPerGuest: 2,
     });
-    await expectFailure(camera.takeShot(guest.id, await photoBytes()), "RollFull");
+    await expectFailure(camera.takeShot(guest.id, shotId(), await photoBytes()), "RollFull");
     expect((await camera.getGuest(guest.id)).shotsTaken).toBe(2);
   });
 
   it("answers RollFull for a full Rolletje without looking at the upload", async () => {
     const { camera, repository } = setup({ shotsPerGuest: 1 });
     const guest = await camera.joinGuest("Tom");
-    await camera.takeShot(guest.id, await photoBytes());
+    await camera.takeShot(guest.id, shotId(), await photoBytes());
 
     await expectFailure(
-      camera.takeShot(guest.id, new TextEncoder().encode("dit is geen foto")),
+      camera.takeShot(guest.id, shotId(), new TextEncoder().encode("dit is geen foto")),
       "RollFull",
     );
     expect(repository.photos()).toHaveLength(1);
@@ -288,7 +295,7 @@ describe("takeShot", () => {
     const { camera } = setup();
 
     await expectFailure(
-      camera.takeShot("00000000-0000-4000-8000-000000000000", new Uint8Array([1, 2, 3])),
+      camera.takeShot("00000000-0000-4000-8000-000000000000", shotId(), new Uint8Array([1, 2, 3])),
       "UnknownGuest",
     );
   });
@@ -323,7 +330,7 @@ describe("takeShot", () => {
     expect(uploadMeta.orientation).toBe(6);
     expect(uploadMeta.exif?.includes(Buffer.from([0x25, 0x88]))).toBe(true); // GPS IFD pointer
 
-    await camera.takeShot(guest.id, new Uint8Array(upload));
+    await camera.takeShot(guest.id, shotId(), new Uint8Array(upload));
 
     const [key] = (blobStore as InMemoryBlobStore).keys();
     const stored = await blobStore.get(key);
@@ -355,7 +362,7 @@ describe("takeShot", () => {
       .png()
       .toBuffer();
 
-    await camera.takeShot(guest.id, new Uint8Array(png));
+    await camera.takeShot(guest.id, shotId(), new Uint8Array(png));
 
     const stored = await blobStore.get(repository.photos()[0].storageKey);
     expect((await sharp(stored!).metadata()).format).toBe("jpeg");
@@ -365,7 +372,7 @@ describe("takeShot", () => {
     const { camera, repository } = setup();
     const guest = await camera.joinGuest("Tom");
 
-    await camera.takeShot(guest.id, await photoBytes(4000, 3000));
+    await camera.takeShot(guest.id, shotId(), await photoBytes(4000, 3000));
 
     expect(repository.photos()[0]).toMatchObject({ width: 2560, height: 1920 });
   });
@@ -383,7 +390,7 @@ describe("takeShot", () => {
     const { camera, blobStore } = setup();
     const guest = await camera.joinGuest("Tom");
 
-    await expectFailure(camera.takeShot(guest.id, bytes), "InvalidImage");
+    await expectFailure(camera.takeShot(guest.id, shotId(), bytes), "InvalidImage");
 
     expect((await camera.getGuest(guest.id)).shotsRemaining).toBe(50);
     expect((blobStore as InMemoryBlobStore).keys()).toEqual([]);
@@ -398,7 +405,7 @@ describe("takeShot", () => {
       .avif()
       .toBuffer();
 
-    await camera.takeShot(guest.id, new Uint8Array(avif));
+    await camera.takeShot(guest.id, shotId(), new Uint8Array(avif));
 
     expect(repository.photos()[0]).toMatchObject({ width: 40, height: 30 });
   });
@@ -409,7 +416,7 @@ describe("takeShot", () => {
     const bytes = await photoBytes(400, 300);
 
     await expectFailure(
-      camera.takeShot(guest.id, bytes.slice(0, bytes.length / 2)),
+      camera.takeShot(guest.id, shotId(), bytes.slice(0, bytes.length / 2)),
       "InvalidImage",
     );
   });
@@ -419,7 +426,7 @@ describe("takeShot", () => {
     const guest = await camera.joinGuest("Tom");
 
     await expectFailure(
-      camera.takeShot(guest.id, new Uint8Array(MAX_SHOT_BYTES + 1)),
+      camera.takeShot(guest.id, shotId(), new Uint8Array(MAX_SHOT_BYTES + 1)),
       "InvalidImage",
     );
   });
@@ -429,13 +436,272 @@ describe("takeShot", () => {
     async (guestId) => {
       const { camera, repository, blobStore } = setup();
 
-      await expectFailure(camera.takeShot(guestId, await photoBytes()), "UnknownGuest");
+      await expectFailure(camera.takeShot(guestId, shotId(), await photoBytes()), "UnknownGuest");
 
       expect(repository.photos()).toEqual([]);
       expect((blobStore as InMemoryBlobStore).keys()).toEqual([]);
     },
   );
 });
+
+describe("takeShot with a repeated shot id (retried uploads)", () => {
+  it("stores the photo under the shot id", async () => {
+    const { camera, repository } = setup();
+    const guest = await camera.joinGuest("Tom");
+    const id = shotId();
+
+    await camera.takeShot(guest.id, id, await photoBytes());
+
+    const [photo] = repository.photos();
+    expect(photo.id).toBe(id);
+    expect(photo.storageKey).toMatch(
+      new RegExp(`^originals/${guest.id}/${id}-[0-9a-f-]{36}\\.jpg$`),
+    );
+  });
+
+  it("counts and stores a Shot only once when its upload is repeated", async () => {
+    const { camera, repository, blobStore } = setup();
+    const guest = await camera.joinGuest("Tom");
+    const id = shotId();
+    const bytes = await photoBytes();
+
+    const first = await camera.takeShot(guest.id, id, bytes);
+    const again = await camera.takeShot(guest.id, id, bytes);
+    const andAgain = await camera.takeShot(guest.id, id.toUpperCase(), bytes);
+
+    expect(first).toEqual({ shotsRemaining: 49, shotsPerGuest: 50 });
+    expect(again).toEqual(first);
+    expect(andAgain).toEqual(first);
+    expect((await camera.getGuest(guest.id)).shotsTaken).toBe(1);
+    expect(repository.photos()).toHaveLength(1);
+    expect((blobStore as InMemoryBlobStore).keys()).toHaveLength(1);
+  });
+
+  it("answers a repeat with the current Rolletje, including later Shots", async () => {
+    const { camera } = setup();
+    const guest = await camera.joinGuest("Tom");
+    const id = shotId();
+    const bytes = await photoBytes();
+    await camera.takeShot(guest.id, id, bytes);
+    await camera.takeShot(guest.id, shotId(), bytes);
+
+    await expect(camera.takeShot(guest.id, id, bytes)).resolves.toEqual({
+      shotsRemaining: 48,
+      shotsPerGuest: 50,
+    });
+  });
+
+  it("confirms a repeated last Shot instead of answering RollFull", async () => {
+    const { camera, repository } = setup({ shotsPerGuest: 1 });
+    const guest = await camera.joinGuest("Tom");
+    const id = shotId();
+    const bytes = await photoBytes();
+    await camera.takeShot(guest.id, id, bytes);
+
+    await expect(camera.takeShot(guest.id, id, bytes)).resolves.toEqual({
+      shotsRemaining: 0,
+      shotsPerGuest: 1,
+    });
+    await expectFailure(camera.takeShot(guest.id, shotId(), bytes), "RollFull");
+    expect(repository.photos()).toHaveLength(1);
+  });
+
+  it("stores concurrent duplicates once; the others hear ShotInProgress and a retry confirms", async () => {
+    const { camera, repository, blobStore } = setup();
+    const guest = await camera.joinGuest("Tom");
+    const id = shotId();
+    const bytes = await photoBytes();
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 5 }, () => camera.takeShot(guest.id, id, bytes)),
+    );
+
+    const succeeded = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(succeeded).toHaveLength(1);
+    expect(succeeded[0].value).toEqual({ shotsRemaining: 49, shotsPerGuest: 50 });
+    for (const r of rejected) {
+      expect(isPartyCameraError(r.reason, "ShotInProgress")).toBe(true);
+    }
+    expect((await camera.getGuest(guest.id)).shotsTaken).toBe(1);
+    expect(repository.photos()).toHaveLength(1);
+    expect((blobStore as InMemoryBlobStore).keys()).toHaveLength(1);
+
+    await expect(camera.takeShot(guest.id, id, bytes)).resolves.toEqual({
+      shotsRemaining: 49,
+      shotsPerGuest: 50,
+    });
+  });
+
+  it("never exceeds the Rolletje with concurrent duplicates and new Shots mixed", async () => {
+    const { camera, repository } = setup({ shotsPerGuest: 3 });
+    const guest = await camera.joinGuest("Tom");
+    const ids = [shotId(), shotId(), shotId(), shotId(), shotId()];
+    const bytes = await photoBytes();
+
+    await Promise.allSettled(
+      ids.flatMap((id) => [0, 1, 2].map(() => camera.takeShot(guest.id, id, bytes))),
+    );
+
+    expect((await camera.getGuest(guest.id)).shotsTaken).toBe(3);
+    expect(repository.photos()).toHaveLength(3);
+    expect(new Set(repository.photos().map((p) => p.id)).size).toBe(3);
+  });
+
+  it("lets a retry store a Shot whose earlier upload failed, costing one shot", async () => {
+    const failing = new FailingBlobStore();
+    const { camera, repository } = setup({}, { blobStore: failing });
+    const guest = await camera.joinGuest("Tom");
+    const id = shotId();
+    const bytes = await photoBytes();
+
+    await expect(camera.takeShot(guest.id, id, bytes)).rejects.toThrow("storage down");
+    failing.failing = false;
+
+    await expect(camera.takeShot(guest.id, id, bytes)).resolves.toEqual({
+      shotsRemaining: 49,
+      shotsPerGuest: 50,
+    });
+    expect(repository.photos().map((p) => p.id)).toEqual([id]);
+  });
+
+  it("lets a retry take over the Shot of an attempt that died, without counting it twice", async () => {
+    const hanging = new HangingBlobStore();
+    const { camera, clock, repository } = setup({}, { blobStore: hanging });
+    const guest = await camera.joinGuest("Tom");
+    const id = shotId();
+    const bytes = await photoBytes();
+
+    // The first attempt reserves the Shot, then never finishes storing it.
+    void camera.takeShot(guest.id, id, bytes);
+    await hanging.reached;
+    hanging.hang = false;
+
+    await expectFailure(camera.takeShot(guest.id, id, bytes), "ShotInProgress");
+
+    clock.advance(PENDING_SHOT_TIMEOUT_MS + 1);
+    await expect(camera.takeShot(guest.id, id, bytes)).resolves.toEqual({
+      shotsRemaining: 49,
+      shotsPerGuest: 50,
+    });
+    expect((await camera.getGuest(guest.id)).shotsTaken).toBe(1);
+    expect(repository.photos()).toHaveLength(1);
+  });
+
+  it("keeps one photo and its bytes when a slow attempt finishes after a takeover", async () => {
+    const hanging = new HangingBlobStore();
+    const { camera, clock, repository } = setup({}, { blobStore: hanging });
+    const guest = await camera.joinGuest("Tom");
+    const id = shotId();
+    const bytes = await photoBytes();
+
+    // The first attempt reserves the Shot and stalls while storing it.
+    const slow = camera.takeShot(guest.id, id, bytes);
+    await hanging.reached;
+    hanging.hang = false;
+
+    // Presumed dead: a retry takes over and stores the Shot.
+    clock.advance(PENDING_SHOT_TIMEOUT_MS + 1);
+    await expect(camera.takeShot(guest.id, id, bytes)).resolves.toEqual({
+      shotsRemaining: 49,
+      shotsPerGuest: 50,
+    });
+
+    // The slow attempt was alive after all and finishes now.
+    hanging.resume();
+    await slow;
+
+    expect((await camera.getGuest(guest.id)).shotsTaken).toBe(1);
+    const photos = repository.photos();
+    expect(photos).toHaveLength(1);
+    expect(hanging.keys()).toEqual([photos[0].storageKey]);
+    expect(await hanging.get(photos[0].storageKey)).not.toBeNull();
+  });
+
+  it("gives back the shot of a dead upload that is never retried", async () => {
+    const hanging = new HangingBlobStore();
+    const { camera, clock } = setup({ shotsPerGuest: 1 }, { blobStore: hanging });
+    const guest = await camera.joinGuest("Tom");
+    const bytes = await photoBytes();
+
+    void camera.takeShot(guest.id, shotId(), bytes);
+    await hanging.reached;
+    hanging.hang = false;
+    await expectFailure(camera.takeShot(guest.id, shotId(), bytes), "RollFull");
+
+    clock.advance(PENDING_SHOT_TIMEOUT_MS + 1);
+    await expect(camera.takeShot(guest.id, shotId(), bytes)).resolves.toEqual({
+      shotsRemaining: 0,
+      shotsPerGuest: 1,
+    });
+    expect((await camera.getGuest(guest.id)).shotsTaken).toBe(1);
+  });
+
+  it("refuses another Gast's shot id with InvalidShotId and changes nothing", async () => {
+    const { camera, repository } = setup();
+    const tom = await camera.joinGuest("Tom");
+    const sara = await camera.joinGuest("Sara");
+    const id = shotId();
+    const bytes = await photoBytes();
+    await camera.takeShot(tom.id, id, bytes);
+
+    await expectFailure(camera.takeShot(sara.id, id, bytes), "InvalidShotId");
+
+    expect((await camera.getGuest(sara.id)).shotsTaken).toBe(0);
+    expect(repository.photos()).toHaveLength(1);
+  });
+
+  it.each(["", "not-a-uuid", "12345678-1234-1234-1234-1234567890", `${shotId()}x`])(
+    "rejects a malformed shot id (%j) with InvalidShotId and costs no shot",
+    async (badId) => {
+      const { camera, repository } = setup();
+      const guest = await camera.joinGuest("Tom");
+
+      await expectFailure(camera.takeShot(guest.id, badId, await photoBytes()), "InvalidShotId");
+
+      expect((await camera.getGuest(guest.id)).shotsTaken).toBe(0);
+      expect(repository.photos()).toHaveLength(0);
+    },
+  );
+
+  it("lets an invalid upload be retried under the same shot id with a good photo", async () => {
+    const { camera } = setup();
+    const guest = await camera.joinGuest("Tom");
+    const id = shotId();
+
+    await expectFailure(
+      camera.takeShot(guest.id, id, new TextEncoder().encode("dit is geen foto")),
+      "InvalidImage",
+    );
+
+    await expect(camera.takeShot(guest.id, id, await photoBytes())).resolves.toEqual({
+      shotsRemaining: 49,
+      shotsPerGuest: 50,
+    });
+  });
+});
+
+/** A blob store whose first write never finishes while `hang` is true. */
+class HangingBlobStore extends InMemoryBlobStore {
+  hang = true;
+  private signal!: () => void;
+  private resumeHanging: (() => void) | null = null;
+  /** Resolves once a write is hanging. */
+  readonly reached = new Promise<void>((resolve) => (this.signal = resolve));
+
+  override async put(key: string, bytes: Uint8Array, contentType: string) {
+    if (this.hang) {
+      this.signal();
+      await new Promise<void>((resolve) => (this.resumeHanging = resolve));
+    }
+    return super.put(key, bytes, contentType);
+  }
+
+  /** Let the hanging write finish (a slow attempt that was not dead after all). */
+  resume() {
+    this.resumeHanging?.();
+  }
+}
 
 /** A blob store whose writes fail while `failing` is true. */
 class FailingBlobStore extends InMemoryBlobStore {
@@ -449,7 +715,7 @@ class FailingBlobStore extends InMemoryBlobStore {
 
 /** A repository that cannot record photos. */
 class FailingPhotoRepository extends InMemoryRepository {
-  override async insertPhoto(): Promise<void> {
+  override async recordShot(): Promise<ShotRecording> {
     throw new Error("database down");
   }
 }
