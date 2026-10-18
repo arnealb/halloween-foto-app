@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-/** Admin sections. Later sections (instellingen, reveal, ...) are added here. */
+/** Admin sections. Later sections (reveal, ...) are added here. */
 const SECTIONS = [
   { href: "/admin", label: "Overzicht" },
   { href: "/admin/fotos", label: "Foto's" },
+  { href: "/admin/instellingen", label: "Instellingen" },
 ] as const;
 
 export function AdminNav() {

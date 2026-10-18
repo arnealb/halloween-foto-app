@@ -17,7 +17,7 @@ export default function AdminOverviewPage() {
 
 async function Overview() {
   const camera = await requireHost();
-  const stats = await camera.getStats();
+  const [stats, settings] = await Promise.all([camera.getStats(), camera.getSettings()]);
 
   const tiles = [
     { label: "Gasten", value: stats.guestCount },
@@ -30,9 +30,21 @@ async function Overview() {
     <div className="flex flex-col gap-8">
       <AutoRefresh everySeconds={20} />
       <section aria-labelledby="stats-heading" className="flex flex-col gap-3">
-        <h1 id="stats-heading" className="text-2xl font-bold tracking-tight">
-          Overzicht
-        </h1>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 id="stats-heading" className="text-2xl font-bold tracking-tight">
+            Overzicht
+          </h1>
+          <Link
+            href="/admin/instellingen"
+            className={`rounded-full px-3 py-1 text-sm font-semibold ${
+              settings.captureOpen
+                ? "bg-green-500/15 text-green-400"
+                : "bg-red-500/15 text-red-400"
+            }`}
+          >
+            Fotograferen {settings.captureOpen ? "open" : "gesloten"}
+          </Link>
+        </div>
         <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {tiles.map(({ label, value }) => (
             <div key={label} className="rounded-2xl bg-stone-900 px-4 py-3">

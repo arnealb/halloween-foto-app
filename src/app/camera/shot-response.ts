@@ -14,6 +14,7 @@ export type ShotResponse =
       ok: false;
       error:
         | "RollFull"
+        | "CaptureClosed"
         | "NoSession"
         | "InvalidImage"
         | "InvalidShotId"

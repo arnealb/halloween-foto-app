@@ -1,3 +1,5 @@
+import type { SettingsUpdate } from "./types";
+
 /**
  * Typed failures of the PartyCamera interface. Callers branch on `code`.
  * Later features add codes such as CaptureClosed and NotRevealed.
@@ -10,6 +12,11 @@
  * - `ShotInProgress`: another attempt is storing this same Shot right now.
  *   Nothing changed; retry later to learn the outcome.
  * - `UnknownPhoto`: no photo with this id (never taken, or deleted).
+ * - `CaptureClosed`: the Host closed fotograferen; no new Shot is taken.
+ * - `SettingsChanged`: a settings update based on an older settings version
+ *   (changed elsewhere in the meantime); nothing changed. Reload and retry.
+ * - `InvalidSettings`: a settings update with invalid values; nothing changed.
+ *   Thrown as {@link InvalidSettingsError}, which says what is wrong per field.
  */
 export type PartyCameraErrorCode =
   | "InvalidName"
@@ -18,7 +25,10 @@ export type PartyCameraErrorCode =
   | "InvalidImage"
   | "InvalidShotId"
   | "ShotInProgress"
-  | "UnknownPhoto";
+  | "UnknownPhoto"
+  | "CaptureClosed"
+  | "InvalidSettings"
+  | "SettingsChanged";
 
 export class PartyCameraError extends Error {
   readonly code: PartyCameraErrorCode;
@@ -37,4 +47,18 @@ export function isPartyCameraError(
   return (
     error instanceof PartyCameraError && (code === undefined || error.code === code)
   );
+}
+
+/** Settings fields that can be invalid, with a Dutch message for each. */
+export type SettingsFieldErrors = Partial<Record<keyof SettingsUpdate, string>>;
+
+/** `InvalidSettings`: one Dutch message per invalid field, for inline form errors. */
+export class InvalidSettingsError extends PartyCameraError {
+  readonly fieldErrors: SettingsFieldErrors;
+
+  constructor(fieldErrors: SettingsFieldErrors) {
+    super("InvalidSettings", Object.values(fieldErrors).join(" "));
+    this.name = "InvalidSettingsError";
+    this.fieldErrors = fieldErrors;
+  }
 }

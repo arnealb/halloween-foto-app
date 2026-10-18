@@ -7,6 +7,8 @@ import type {
   GuestWithPhotoCounts,
   Photo,
   Repository,
+  SettingsChanges,
+  SettingsUpdateResult,
   ShotRecording,
   ShotReservation,
   ShotReservationRequest,
@@ -46,6 +48,24 @@ export class InMemoryRepository implements Repository {
     return { ...this.settings };
   }
 
+  async updateSettings(
+    changes: SettingsChanges,
+    expectedVersion?: number,
+  ): Promise<SettingsUpdateResult> {
+    if (expectedVersion !== undefined && expectedVersion !== this.settings.settingsVersion) {
+      return { status: "stale" };
+    }
+    const defined = Object.fromEntries(
+      Object.entries(changes).filter(([, value]) => value !== undefined),
+    );
+    this.settings = {
+      ...this.settings,
+      ...defined,
+      settingsVersion: this.settings.settingsVersion + 1,
+    };
+    return { status: "updated", settings: { ...this.settings } };
+  }
+
   // Each method below runs synchronously (no await in between), so like the
   // Postgres functions (which lock the Gast row) it is atomic with respect to
   // other concurrent calls.
@@ -58,7 +78,7 @@ export class InMemoryRepository implements Repository {
   }: ShotReservationRequest): Promise<ShotReservation> {
     const guest = this.guests.get(guestId);
     if (!guest) return { status: "unknown-guest" };
-    const { shotsPerGuest } = this.settings;
+    const { shotsPerGuest, captureOpen } = this.settings;
 
     const existing = this.reservations.get(shotId);
     if (existing) {
@@ -72,6 +92,10 @@ export class InMemoryRepository implements Repository {
       existing.reservedAt = new Date(now);
       return { status: "reserved", shotsTaken: guest.shotsTaken, shotsPerGuest };
     }
+
+    // A new Shot while fotograferen is closed. (Shots reserved before closing
+    // were answered above and still complete.)
+    if (!captureOpen) return { status: "capture-closed" };
 
     // Give back the shots of this Gast's dead attempts (other shot ids).
     for (const [id, r] of this.reservations) {

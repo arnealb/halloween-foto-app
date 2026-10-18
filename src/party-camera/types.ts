@@ -89,7 +89,12 @@ export type ShotReservation =
   /** Another, still live attempt is storing this Shot right now; nothing changed. */
   | { status: "in-progress" }
   /** The shot id belongs to a different Gast; nothing changed. */
-  | { status: "foreign-shot" };
+  | { status: "foreign-shot" }
+  /**
+   * Fotograferen is closed and this is a new Shot; nothing changed. A Shot
+   * reserved before closing (stored, or pending) is answered as above instead.
+   */
+  | { status: "capture-closed" };
 
 /** Outcome of {@link Repository.recordShot}. */
 export type ShotRecording =
@@ -131,6 +136,23 @@ export interface EventSettings {
   settingsVersion: number;
 }
 
+/**
+ * What the Host may change with `updateSettings`. Absent fields stay as they
+ * are. Reveal and watermark fields join here with their features.
+ */
+export type SettingsUpdate = Partial<
+  Pick<EventSettings, "title" | "welcomeText" | "accentColor" | "shotsPerGuest" | "captureOpen">
+>;
+
+/** Validated settings values for {@link Repository.updateSettings}. */
+export type SettingsChanges = Partial<Omit<EventSettings, "settingsVersion">>;
+
+/** Outcome of {@link Repository.updateSettings}. */
+export type SettingsUpdateResult =
+  | { status: "updated"; settings: EventSettings }
+  /** The settings version was no longer the expected one; nothing changed. */
+  | { status: "stale" };
+
 // ---------------------------------------------------------------------------
 // Ports (adapters are injected into PartyCamera)
 // ---------------------------------------------------------------------------
@@ -150,10 +172,22 @@ export interface Repository {
   getSettings(): Promise<EventSettings>;
 
   /**
+   * Write already validated settings `changes` and bump `settingsVersion` by
+   * one, atomically; returns the settings after the change. Fields absent
+   * from `changes` are left as they are. With `expectedVersion`, the change
+   * only applies while `settingsVersion` still equals it (compare-and-set);
+   * otherwise nothing changes and the result is `stale`. Postgres function
+   * `update_event_settings`; it waits for Shot reservations in flight, so no
+   * reservation made under the old settings commits after this returns.
+   */
+  updateSettings(changes: SettingsChanges, expectedVersion?: number): Promise<SettingsUpdateResult>;
+
+  /**
    * Atomically reserve the Shot `shotId` on the Gast's Rolletje. Keyed by the
    * shot id, so a retried upload never counts twice:
-   * - a new shot id takes one shot off the Rolletje, only while `shotsTaken`
-   *   is below the Event's `shotsPerGuest` (concurrent calls never pass it);
+   * - a new shot id takes one shot off the Rolletje, only while fotograferen
+   *   is open (`captureOpen`) and `shotsTaken` is below the Event's current
+   *   `shotsPerGuest` (concurrent calls never pass it);
    * - a shot id that is already stored, or pending for a live attempt, changes
    *   nothing; a stale pending one is taken over (see
    *   {@link ShotReservationRequest.staleBefore}).

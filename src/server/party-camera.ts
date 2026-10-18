@@ -11,6 +11,7 @@ import { serverEnv } from "./env";
 
 /** PartyCamera operations only the Host may call. */
 type HostOperation =
+  | "updateSettings"
   | "getStats"
   | "listAllPhotos"
   | "hidePhoto"

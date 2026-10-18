@@ -3,7 +3,11 @@
 import { headers } from "next/headers";
 import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
-import { isPartyCameraError } from "@/party-camera";
+import {
+  InvalidSettingsError,
+  isPartyCameraError,
+  type SettingsFieldErrors,
+} from "@/party-camera";
 import {
   endAdminSession,
   isHostPassword,
@@ -104,6 +108,100 @@ export async function renameGuestAction(
     }
     console.error("renameGuestAction failed", error);
     return { error: "Er ging iets mis. Probeer het opnieuw.", name };
+  }
+}
+
+/** The settings form as submitted, echoed back after an error. */
+export interface SettingsFormValues {
+  title: string;
+  welcomeText: string;
+  accentColor: string;
+  shotsPerGuest: string;
+}
+
+export interface SettingsFormState {
+  /** Counts submissions, so the form remounts with fresh values after each one. */
+  submissions: number;
+  /** Set after a successful save. */
+  saved?: boolean;
+  /** Per field, in Dutch. */
+  fieldErrors?: SettingsFieldErrors;
+  /** An error not tied to a field. */
+  error?: string;
+  values?: SettingsFormValues;
+}
+
+/**
+ * Save the Event settings. Form fields: `title`, `welcomeText`,
+ * `accentColor`, `shotsPerGuest`, and `settingsVersion` (the version the form
+ * was shown with: a save over a newer change is refused). PartyCamera
+ * validates; this only parses.
+ */
+export async function updateSettingsAction(
+  previous: SettingsFormState,
+  formData: FormData,
+): Promise<SettingsFormState> {
+  const camera = await requireHost();
+  const submissions = (previous?.submissions ?? 0) + 1;
+  const values: SettingsFormValues = {
+    title: String(formData.get("title") ?? ""),
+    welcomeText: String(formData.get("welcomeText") ?? ""),
+    accentColor: String(formData.get("accentColor") ?? ""),
+    shotsPerGuest: String(formData.get("shotsPerGuest") ?? ""),
+  };
+  const shots = values.shotsPerGuest.trim();
+  const version = String(formData.get("settingsVersion") ?? "");
+  try {
+    await camera.updateSettings(
+      {
+        title: values.title,
+        welcomeText: values.welcomeText,
+        accentColor: values.accentColor,
+        // Only plain digits; anything else is passed on as NaN and refused.
+        shotsPerGuest: /^\d{1,6}$/.test(shots) ? Number(shots) : Number.NaN,
+      },
+      {
+        // Anything but plain digits is treated as an outdated form.
+        expectedVersion: /^\d{1,9}$/.test(version) ? Number(version) : Number.NaN,
+      },
+    );
+    refresh();
+    return { submissions, saved: true };
+  } catch (error) {
+    if (error instanceof InvalidSettingsError) {
+      return { submissions, fieldErrors: error.fieldErrors, values };
+    }
+    if (isPartyCameraError(error, "SettingsChanged")) {
+      return { submissions, error: error.message, values };
+    }
+    console.error("updateSettingsAction failed", error);
+    return {
+      submissions,
+      error: "Er ging iets mis. Probeer het opnieuw.",
+      values,
+    };
+  }
+}
+
+export interface CaptureFormState {
+  error?: string;
+}
+
+/** Open or close fotograferen. Form field `captureOpen`: "true" or "false". */
+export async function setCaptureOpenAction(
+  _previous: CaptureFormState,
+  formData: FormData,
+): Promise<CaptureFormState> {
+  const camera = await requireHost();
+  const value = formData.get("captureOpen");
+  if (value !== "true" && value !== "false") return { error: "Ongeldige keuze." };
+  try {
+    await camera.updateSettings({ captureOpen: value === "true" });
+    refresh();
+    return {};
+  } catch (error) {
+    console.error("setCaptureOpenAction failed", error);
+    return { error: "Er ging iets mis. Probeer het opnieuw." };
   }
 }
 

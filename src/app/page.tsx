@@ -36,7 +36,7 @@ async function JoinScreen() {
         </span>
         <h1 className="text-4xl font-bold leading-tight tracking-tight">{settings.title}</h1>
         {settings.welcomeText && (
-          <p className="text-lg text-stone-300">{settings.welcomeText}</p>
+          <p className="whitespace-pre-line text-lg text-stone-300">{settings.welcomeText}</p>
         )}
       </header>
 

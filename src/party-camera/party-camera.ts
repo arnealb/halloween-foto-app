@@ -1,5 +1,6 @@
 import { PartyCameraError } from "./errors";
 import { normalizeShot, renderThumb } from "./image";
+import { effectiveChanges, validateSettingsUpdate } from "./settings";
 import type {
   BlobStore,
   Clock,
@@ -10,6 +11,7 @@ import type {
   PartyCameraDeps,
   Photo,
   Repository,
+  SettingsUpdate,
 } from "./types";
 
 /** Longest Gast name we accept (after trimming). */
@@ -62,10 +64,19 @@ export interface PartyCamera {
    * recorded under `shotId`. If anything fails after the reservation, it is
    * released: a failed upload costs no shot.
    *
+   * The limit is the Event's current `shotsPerGuest`: after the Host lowers
+   * it, a Gast at or above the new limit has a full Rolletje.
+   *
+   * While fotograferen is closed (`captureOpen` false) a new Shot fails with
+   * `CaptureClosed`. A Shot reserved before closing still completes: a retry
+   * of an already stored Shot is answered with success as above, and a Shot
+   * whose upload was underway is still stored. Checked atomically with the
+   * reservation, not beforehand.
+   *
    * Returns only the Rolletje counter; never anything that reveals the photo.
-   * @throws PartyCameraError `InvalidShotId`, `UnknownGuest`, `RollFull`,
-   *   `ShotInProgress` (the same Shot is being stored by a concurrent attempt;
-   *   retry later), `InvalidImage`
+   * @throws PartyCameraError `InvalidShotId`, `UnknownGuest`, `CaptureClosed`,
+   *   `RollFull`, `ShotInProgress` (the same Shot is being stored by a
+   *   concurrent attempt; retry later), `InvalidImage`
    */
   takeShot(guestId: string, shotId: string, imageBytes: Uint8Array): Promise<ShotTaken>;
 
@@ -76,6 +87,29 @@ export interface PartyCamera {
   // Host operations. Callers must have verified the Host's session; the
   // server only hands these out behind the admin cookie (see src/server).
   // -------------------------------------------------------------------------
+
+  /**
+   * The Host changes Event settings: title (required, whitespace collapsed,
+   * at most {@link MAX_TITLE_LENGTH} characters), welcome text (may be empty,
+   * at most {@link MAX_WELCOME_TEXT_LENGTH}), accent color (exactly
+   * `#rrggbb`, stored lowercase), `shotsPerGuest` (whole number 1 to
+   * {@link MAX_SHOTS_PER_GUEST}; applies to every Rolletje at once) and
+   * `captureOpen`. Absent fields stay as they are. A change bumps
+   * `settingsVersion` (derived-image caches key on it); an update that
+   * changes nothing writes nothing and keeps the version.
+   *
+   * `expectedVersion` (optional): the `settingsVersion` the update is based
+   * on, e.g. the one a form was shown with. When the settings changed since,
+   * nothing is changed (checked atomically with the write). Leave it out for
+   * a change whose requested value is the whole intent (open/dicht).
+   * @throws InvalidSettingsError (`InvalidSettings`) listing every invalid
+   *   field; nothing is changed then.
+   * @throws PartyCameraError `SettingsChanged` when `expectedVersion` is stale.
+   */
+  updateSettings(
+    update: SettingsUpdate,
+    options?: { expectedVersion?: number },
+  ): Promise<EventSettings>;
 
   /** Live numbers for the Admin: Gasten, photos, and photos per Gast. */
   getStats(): Promise<PartyStats>;
@@ -263,6 +297,8 @@ class DefaultPartyCamera implements PartyCamera {
         throw new PartyCameraError("RollFull", "Je rolletje is vol.");
       case "foreign-shot":
         throw new PartyCameraError("InvalidShotId", "Ongeldig shot-id.");
+      case "capture-closed":
+        throw new PartyCameraError("CaptureClosed", "Fotograferen is gesloten.");
       case "in-progress":
         throw new PartyCameraError(
           "ShotInProgress",
@@ -333,6 +369,31 @@ class DefaultPartyCamera implements PartyCamera {
 
   getSettings(): Promise<EventSettings> {
     return this.repository.getSettings();
+  }
+
+  async updateSettings(
+    update: SettingsUpdate,
+    options: { expectedVersion?: number } = {},
+  ): Promise<EventSettings> {
+    const changes = validateSettingsUpdate(update ?? {});
+    const { expectedVersion } = options;
+    if (expectedVersion !== undefined && !Number.isInteger(expectedVersion)) {
+      throw settingsChanged();
+    }
+    // Without an expected version, a change in between is retried against the
+    // new state (a few times): never silently overwritten or skipped.
+    for (let attempt = 0; ; attempt++) {
+      const current = await this.repository.getSettings();
+      if (expectedVersion !== undefined && current.settingsVersion !== expectedVersion) {
+        throw settingsChanged();
+      }
+      const effective = effectiveChanges(changes, current);
+      if (Object.keys(effective).length === 0) return current;
+      // Compare-and-set against the version the changes were computed from.
+      const result = await this.repository.updateSettings(effective, current.settingsVersion);
+      if (result.status === "updated") return result.settings;
+      if (expectedVersion !== undefined || attempt >= 2) throw settingsChanged();
+    }
   }
 
   async getStats(): Promise<PartyStats> {
@@ -539,4 +600,11 @@ function normalizeGuestName(raw: unknown): string {
     );
   }
   return name;
+}
+
+function settingsChanged(): PartyCameraError {
+  return new PartyCameraError(
+    "SettingsChanged",
+    "De instellingen zijn intussen gewijzigd. Herlaad de pagina en probeer het opnieuw.",
+  );
 }
