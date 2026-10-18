@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Vitest is geïnstalleerd, `npm test` draait de suite
 - [ ] PartyCamera bestaat als één module die zijn adapters geïnjecteerd krijgt. Er bestaan in-memory adapters en een vaste clock voor tests, plus Supabase-adapters voor productie.
