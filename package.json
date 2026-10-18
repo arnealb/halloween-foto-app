@@ -1,32 +1,39 @@
 {
-  "name": "halloweenapp-scaffold",
+  "name": "party-camera",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "node --env-file-if-exists=.env scripts/migrate.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",
     "archiver": "^8.0.0",
     "jose": "^6.2.12",
     "next": "16.4.2",
+    "pg": "^8.23.1",
     "qrcode": "^1.5.4",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "server-only": "^0.0.1",
     "sharp": "^0.35.5",
     "uuid": "^14.0.3"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",
-    "@types/node": "^20",
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^5.0.5"
   }
 }
