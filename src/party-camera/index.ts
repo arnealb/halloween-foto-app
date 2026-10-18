@@ -15,9 +15,14 @@ export type {
   RenderedPhoto,
   ShotTaken,
 } from "./party-camera";
+export {
+  MAX_SHOTS_PER_GUEST,
+  MAX_TITLE_LENGTH,
+  MAX_WELCOME_TEXT_LENGTH,
+} from "./settings";
 export { MAX_SHOT_BYTES, MAX_SHOT_LONG_SIDE, THUMB_LONG_SIDE } from "./image";
-export { PartyCameraError, isPartyCameraError } from "./errors";
-export type { PartyCameraErrorCode } from "./errors";
+export { InvalidSettingsError, PartyCameraError, isPartyCameraError } from "./errors";
+export type { PartyCameraErrorCode, SettingsFieldErrors } from "./errors";
 export { DEFAULT_EVENT_SETTINGS } from "./defaults";
 export { systemClock } from "./adapters/system-clock";
 export type {
@@ -31,6 +36,9 @@ export type {
   Photo,
   Repository,
   RevealOverride,
+  SettingsChanges,
+  SettingsUpdateResult,
+  SettingsUpdate,
   ShotRecording,
   ShotReservation,
   ShotReservationRequest,

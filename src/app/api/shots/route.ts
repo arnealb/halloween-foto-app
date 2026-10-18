@@ -50,6 +50,9 @@ export async function POST(request: NextRequest): Promise<Response> {
     if (isPartyCameraError(error, "RollFull")) {
       return reply(409, { ok: false, error: "RollFull" });
     }
+    if (isPartyCameraError(error, "CaptureClosed")) {
+      return reply(409, { ok: false, error: "CaptureClosed" });
+    }
     if (isPartyCameraError(error, "UnknownGuest")) {
       return reply(401, { ok: false, error: "NoSession" });
     }

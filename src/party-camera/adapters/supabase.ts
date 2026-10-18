@@ -9,6 +9,8 @@ import type {
   Photo,
   Repository,
   RevealOverride,
+  SettingsChanges,
+  SettingsUpdateResult,
   ShotRecording,
   ShotReservation,
   ShotReservationRequest,
@@ -144,6 +146,34 @@ function toSettings(row: EventSettingsRow): EventSettings {
   };
 }
 
+/** Column names of the settings fields, for `update_event_settings`. */
+const SETTINGS_COLUMNS: Record<keyof SettingsChanges, keyof EventSettingsRow> = {
+  title: "title",
+  welcomeText: "welcome_text",
+  accentColor: "accent_color",
+  shotsPerGuest: "shots_per_guest",
+  captureOpen: "capture_open",
+  revealAt: "reveal_at",
+  revealOverride: "reveal_override",
+  watermarkEnabled: "watermark_enabled",
+  watermarkText: "watermark_text",
+  watermarkLogoKey: "watermark_logo_key",
+  watermarkPosition: "watermark_position",
+  watermarkScale: "watermark_scale",
+  watermarkOpacity: "watermark_opacity",
+};
+
+function toSettingsRowChanges(changes: SettingsChanges): Record<string, unknown> {
+  const row: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(changes)) {
+    if (value === undefined) continue;
+    const column = SETTINGS_COLUMNS[key as keyof SettingsChanges];
+    if (!column) throw new Error(`updateSettings: unknown setting ${key}`);
+    row[column] = value instanceof Date ? value.toISOString() : value;
+  }
+  return row;
+}
+
 /** Repository backed by Supabase Postgres (service-role client, server only). */
 export class SupabaseRepository implements Repository {
   constructor(private readonly db: SupabaseClient) {}
@@ -177,6 +207,28 @@ export class SupabaseRepository implements Repository {
       .single<EventSettingsRow>();
     if (error) throw new Error(`getSettings failed: ${error.message}`);
     return toSettings(data);
+  }
+
+  async updateSettings(
+    changes: SettingsChanges,
+    expectedVersion?: number,
+  ): Promise<SettingsUpdateResult> {
+    const { data, error } = await this.db.rpc("update_event_settings", {
+      p_changes: toSettingsRowChanges(changes),
+      p_expected_version: expectedVersion ?? null,
+    });
+    if (error) throw new Error(`updateSettings failed: ${error.message}`);
+    const result = data as UpdateSettingsResult;
+    switch (result?.status) {
+      case "updated":
+        return { status: "updated", settings: toSettings(result.settings) };
+      case "stale":
+        return { status: "stale" };
+      default:
+        throw new Error(
+          `update_event_settings returned an unexpected result: ${JSON.stringify(result)}`,
+        );
+    }
   }
 
   async reserveShot({
@@ -286,14 +338,20 @@ export class SupabaseRepository implements Repository {
   }
 }
 
-/** JSON returned by the `reserve_shot` Postgres function (0005 migration). */
+/** JSON returned by the `update_event_settings` Postgres function (0008 migration). */
+type UpdateSettingsResult =
+  { status: "updated"; settings: EventSettingsRow } | { status: "stale"; settings_version: number };
+
+/** JSON returned by the `reserve_shot` Postgres function (0007 migration). */
 type ReserveShotResult =
   | {
       status: "reserved" | "roll-full" | "already-stored";
       shots_taken: number;
       shots_per_guest: number;
     }
-  | { status: "unknown-guest" | "in-progress" | "foreign-shot" };
+  | {
+      status: "unknown-guest" | "in-progress" | "foreign-shot" | "capture-closed";
+    };
 
 function toShotReservation(result: ReserveShotResult): ShotReservation {
   switch (result?.status) {
@@ -308,6 +366,7 @@ function toShotReservation(result: ReserveShotResult): ShotReservation {
     case "unknown-guest":
     case "in-progress":
     case "foreign-shot":
+    case "capture-closed":
       return { status: result.status };
     default:
       throw new Error(`reserve_shot returned an unexpected result: ${JSON.stringify(result)}`);

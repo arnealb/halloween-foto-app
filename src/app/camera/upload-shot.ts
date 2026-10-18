@@ -12,6 +12,8 @@ export interface PendingShot {
 export type UploadOutcome =
   | { kind: "stored"; shotsRemaining: number; shotsPerGuest: number }
   | { kind: "roll-full" }
+  /** Fotograferen is closed: this Shot was not taken (no shot used). Final. */
+  | { kind: "capture-closed" }
   | { kind: "no-session" }
   /** The server refused this photo for good (not a photo, too large, ...). No shot was used. */
   | { kind: "rejected" }
@@ -75,6 +77,8 @@ export async function uploadShot({ shotId, photo }: PendingShot): Promise<Upload
   switch (body.error) {
     case "RollFull":
       return { kind: "roll-full" };
+    case "CaptureClosed":
+      return { kind: "capture-closed" };
     case "NoSession":
       return { kind: "no-session" };
     case "InvalidImage":

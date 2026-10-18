@@ -193,6 +193,31 @@ describe("upload queue", () => {
     expect(calls[4].at - secondShotStart).toBe(1_000);
   });
 
+  it("treats capture-closed as final: no retry, and the next shot is still tried", async () => {
+    const { queue, calls, settled, lastState } = setup({ baseDelayMs: 100 });
+
+    queue.add(shot(1));
+    queue.add(shot(2));
+    await flush();
+    calls[0].answer({ kind: "capture-closed" });
+    await flush();
+
+    expect(settled).toEqual([{ shotId: shot(1).shotId, kind: "capture-closed" }]);
+    // Shot 2 may have been stored before closing (its answer got lost), so it
+    // still goes up once; the server confirms or refuses it.
+    expect(calls.map((c) => c.shot.shotId)).toEqual([shot(1).shotId, shot(2).shotId]);
+    calls[1].answer(stored(49));
+    await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(calls).toHaveLength(2);
+    expect(settled).toEqual([
+      { shotId: shot(1).shotId, kind: "capture-closed" },
+      { shotId: shot(2).shotId, kind: "stored" },
+    ]);
+    expect(lastState()).toEqual({ pending: 0, waitingToRetry: false });
+  });
+
   it("gives up on a shot after maxServerErrors server errors and moves on to the next", async () => {
     const { queue, calls, settled, lastState } = setup({ baseDelayMs: 100, maxServerErrors: 3 });
 
