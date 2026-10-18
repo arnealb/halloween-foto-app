@@ -5,8 +5,10 @@ import type {
   BlobStore,
   EventSettings,
   Guest,
+  Photo,
   Repository,
   RevealOverride,
+  ShotReservation,
   WatermarkPosition,
 } from "../types";
 
@@ -101,6 +103,53 @@ export class SupabaseRepository implements Repository {
       .single<EventSettingsRow>();
     if (error) throw new Error(`getSettings failed: ${error.message}`);
     return toSettings(data);
+  }
+
+  async reserveShot(guestId: string): Promise<ShotReservation> {
+    if (!UUID_RE.test(guestId)) return { status: "unknown-guest" };
+    const { data, error } = await this.db.rpc("reserve_shot", { p_guest_id: guestId });
+    if (error) throw new Error(`reserveShot failed: ${error.message}`);
+    return toShotReservation(data as ReserveShotResult);
+  }
+
+  async releaseShot(guestId: string): Promise<void> {
+    if (!UUID_RE.test(guestId)) return;
+    const { error } = await this.db.rpc("release_shot", { p_guest_id: guestId });
+    if (error) throw new Error(`releaseShot failed: ${error.message}`);
+  }
+
+  async insertPhoto(photo: Photo): Promise<void> {
+    const { error } = await this.db.from("photos").insert({
+      id: photo.id,
+      guest_id: photo.guestId,
+      storage_key: photo.storageKey,
+      width: photo.width,
+      height: photo.height,
+      taken_at: photo.takenAt.toISOString(),
+      hidden: photo.hidden,
+    });
+    if (error) throw new Error(`insertPhoto failed: ${error.message}`);
+  }
+}
+
+/** JSON returned by the `reserve_shot` Postgres function (0002 migration). */
+type ReserveShotResult =
+  | { status: "reserved" | "roll-full"; shots_taken: number; shots_per_guest: number }
+  | { status: "unknown-guest" };
+
+function toShotReservation(result: ReserveShotResult): ShotReservation {
+  switch (result?.status) {
+    case "reserved":
+    case "roll-full":
+      return {
+        status: result.status,
+        shotsTaken: result.shots_taken,
+        shotsPerGuest: result.shots_per_guest,
+      };
+    case "unknown-guest":
+      return { status: "unknown-guest" };
+    default:
+      throw new Error(`reserve_shot returned an unexpected result: ${JSON.stringify(result)}`);
   }
 }
 

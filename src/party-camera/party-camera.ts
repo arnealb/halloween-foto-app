@@ -1,4 +1,5 @@
 import { PartyCameraError } from "./errors";
+import { normalizeShot } from "./image";
 import type {
   BlobStore,
   Clock,
@@ -6,6 +7,7 @@ import type {
   Guest,
   GuestWithRoll,
   PartyCameraDeps,
+  Photo,
   Repository,
 } from "./types";
 
@@ -32,8 +34,26 @@ export interface PartyCamera {
    */
   getGuest(guestId: string): Promise<GuestWithRoll>;
 
+  /**
+   * A Gast takes a Shot. The photo is normalized (EXIF orientation applied,
+   * all metadata incl. GPS stripped, re-encoded as JPEG), one shot is reserved
+   * atomically on the Rolletje, the original is stored privately and the Shot
+   * is recorded. If storing fails, the reservation is released: a failed
+   * upload costs no shot.
+   *
+   * Returns only the Rolletje counter; never anything that reveals the photo.
+   * @throws PartyCameraError `InvalidImage`, `UnknownGuest`, `RollFull`
+   */
+  takeShot(guestId: string, imageBytes: Uint8Array): Promise<ShotTaken>;
+
   /** The Event settings (title, Rolletje size, Reveal, watermark, ...). */
   getSettings(): Promise<EventSettings>;
+}
+
+/** Result of {@link PartyCamera.takeShot}: the Rolletje after the Shot. */
+export interface ShotTaken {
+  shotsRemaining: number;
+  shotsPerGuest: number;
 }
 
 export function createPartyCamera(deps: PartyCameraDeps): PartyCamera {
@@ -42,8 +62,7 @@ export function createPartyCamera(deps: PartyCameraDeps): PartyCamera {
 
 class DefaultPartyCamera implements PartyCamera {
   private readonly repository: Repository;
-  // Used by upcoming features (shots, watermark, export).
-  protected readonly blobStore: BlobStore;
+  private readonly blobStore: BlobStore;
   private readonly clock: Clock;
   private readonly newId: () => string;
 
@@ -74,8 +93,69 @@ class DefaultPartyCamera implements PartyCamera {
     return this.withRoll(guest);
   }
 
+  async takeShot(guestId: string, imageBytes: Uint8Array): Promise<ShotTaken> {
+    // Cheap early exit before decoding: an unknown Gast or a full Rolletje never
+    // costs server CPU on image work. The atomic reservation below stays the
+    // real guard against races.
+    const guest = await this.getGuest(guestId);
+    if (guest.shotsRemaining <= 0) {
+      throw new PartyCameraError("RollFull", "Je rolletje is vol.");
+    }
+
+    const image = await normalizeShot(imageBytes);
+
+    const reservation = await this.repository.reserveShot(guestId);
+    if (reservation.status === "unknown-guest") {
+      throw new PartyCameraError("UnknownGuest", "Deze gast bestaat niet.");
+    }
+    if (reservation.status === "roll-full") {
+      throw new PartyCameraError("RollFull", "Je rolletje is vol.");
+    }
+
+    const photoId = this.newId();
+    const photo: Photo = {
+      id: photoId,
+      guestId,
+      storageKey: `originals/${guestId}/${photoId}.jpg`,
+      width: image.width,
+      height: image.height,
+      takenAt: this.clock.now(),
+      hidden: false,
+    };
+
+    try {
+      await this.blobStore.put(photo.storageKey, image.bytes, "image/jpeg");
+    } catch (error) {
+      await this.releaseReservation(guestId);
+      throw error;
+    }
+
+    try {
+      await this.repository.insertPhoto(photo);
+    } catch (error) {
+      // Without a record the stored bytes are orphaned: remove them too.
+      await this.blobStore.delete([photo.storageKey]).catch((cleanupError) => {
+        console.error("takeShot: could not remove orphaned original", cleanupError);
+      });
+      await this.releaseReservation(guestId);
+      throw error;
+    }
+
+    return {
+      shotsPerGuest: reservation.shotsPerGuest,
+      shotsRemaining: Math.max(0, reservation.shotsPerGuest - reservation.shotsTaken),
+    };
+  }
+
   getSettings(): Promise<EventSettings> {
     return this.repository.getSettings();
+  }
+
+  /** Give a reserved shot back; never masks the error that caused it. */
+  private async releaseReservation(guestId: string): Promise<void> {
+    await this.repository.releaseShot(guestId).catch((releaseError) => {
+      console.error("takeShot: could not release the reserved shot", releaseError);
+    });
   }
 
   private async withRoll(guest: Guest): Promise<GuestWithRoll> {
