@@ -5,6 +5,7 @@ import type {
   BlobStore,
   EventSettings,
   Guest,
+  GuestWithPhotoCounts,
   Photo,
   Repository,
   RevealOverride,
@@ -25,6 +26,77 @@ interface GuestRow {
   name: string;
   shots_taken: number;
   created_at: string;
+}
+
+interface GuestWithPhotoCountsRow extends GuestRow {
+  photo_count: number;
+  hidden_count: number;
+}
+
+interface PhotoRow {
+  id: string;
+  guest_id: string;
+  storage_key: string;
+  width: number;
+  height: number;
+  taken_at: string;
+  hidden: boolean;
+}
+
+const PHOTO_COLUMNS = "id, guest_id, storage_key, width, height, taken_at, hidden";
+
+/**
+ * Rows per request when reading whole tables. Supabase's API caps a response
+ * at 1000 rows by default, so larger reads go page by page.
+ */
+const PAGE_SIZE = 1000;
+
+function toPhoto(row: PhotoRow): Photo {
+  return {
+    id: row.id,
+    guestId: row.guest_id,
+    storageKey: row.storage_key,
+    width: row.width,
+    height: row.height,
+    takenAt: new Date(row.taken_at),
+    hidden: row.hidden,
+  };
+}
+
+/** A query that can be narrowed with a PostgREST `or` filter and limited. */
+interface KeysetQuery<T> {
+  or(filter: string): KeysetQuery<T>;
+  limit(count: number): PromiseLike<{ data: T[] | null; error: { message: string } | null }>;
+}
+
+/**
+ * Fetch every row of a query ordered by (`column`, id), one page of
+ * {@link PAGE_SIZE} at a time. Keyset paging, not offsets: each page starts
+ * after the last row seen, so rows inserted or deleted between pages (a live
+ * party) never make a page repeat or skip a row. `query()` must return a fresh
+ * query, already ordered by `column` then `id`.
+ */
+async function fetchAllByKey<T extends { id: string }>(
+  what: string,
+  column: keyof T & string,
+  query: () => KeysetQuery<T>,
+): Promise<T[]> {
+  const rows: T[] = [];
+  let last: T | undefined;
+  for (;;) {
+    let page = query();
+    if (last) {
+      // The raw timestamp string from the database keeps its microseconds;
+      // quoted, because it contains ':' '.' and '+'.
+      const key = `"${String(last[column])}"`;
+      page = page.or(`${column}.gt.${key},and(${column}.eq.${key},id.gt.${last.id})`);
+    }
+    const { data, error } = await page.limit(PAGE_SIZE);
+    if (error) throw new Error(`${what} failed: ${error.message}`);
+    rows.push(...(data ?? []));
+    if (!data || data.length < PAGE_SIZE) return rows;
+    last = data[data.length - 1];
+  }
 }
 
 interface EventSettingsRow {
@@ -151,6 +223,67 @@ export class SupabaseRepository implements Repository {
     }
     return data;
   }
+
+  async listGuests(): Promise<GuestWithPhotoCounts[]> {
+    // PostgREST filters and orders the function's result like a table.
+    const rows = await fetchAllByKey<GuestWithPhotoCountsRow>("listGuests", "created_at", () =>
+      this.db.rpc("list_guests_with_photo_counts").order("created_at").order("id"),
+    );
+    return rows.map((row) => ({
+      ...toGuest(row),
+      photoCount: row.photo_count,
+      hiddenCount: row.hidden_count,
+    }));
+  }
+
+  async listPhotos(): Promise<Photo[]> {
+    const rows = await fetchAllByKey<PhotoRow>("listPhotos", "taken_at", () =>
+      this.db.from("photos").select(PHOTO_COLUMNS).order("taken_at").order("id"),
+    );
+    return rows.map(toPhoto);
+  }
+
+  async findPhoto(id: string): Promise<Photo | null> {
+    if (!UUID_RE.test(id)) return null;
+    const { data, error } = await this.db
+      .from("photos")
+      .select(PHOTO_COLUMNS)
+      .eq("id", id)
+      .maybeSingle<PhotoRow>();
+    if (error) throw new Error(`findPhoto failed: ${error.message}`);
+    return data ? toPhoto(data) : null;
+  }
+
+  async setPhotoHidden(id: string, hidden: boolean): Promise<boolean> {
+    if (!UUID_RE.test(id)) return false;
+    const { data, error } = await this.db
+      .from("photos")
+      .update({ hidden })
+      .eq("id", id)
+      .select("id");
+    if (error) throw new Error(`setPhotoHidden failed: ${error.message}`);
+    return data.length > 0;
+  }
+
+  async deletePhoto(id: string): Promise<boolean> {
+    if (!UUID_RE.test(id)) return false;
+    // Only the photo row: guests.shots_taken and the 'stored' row in
+    // shot_reservations stay, so no shot is given back (see 0004/0006).
+    const { data, error } = await this.db.from("photos").delete().eq("id", id).select("id");
+    if (error) throw new Error(`deletePhoto failed: ${error.message}`);
+    return data.length > 0;
+  }
+
+  async renameGuest(id: string, name: string): Promise<boolean> {
+    if (!UUID_RE.test(id)) return false;
+    const { data, error } = await this.db
+      .from("guests")
+      .update({ name })
+      .eq("id", id)
+      .select("id");
+    if (error) throw new Error(`renameGuest failed: ${error.message}`);
+    return data.length > 0;
+  }
 }
 
 /** JSON returned by the `reserve_shot` Postgres function (0005 migration). */
@@ -216,5 +349,18 @@ export class SupabaseBlobStore implements BlobStore {
     if (keys.length === 0) return;
     const { error } = await this.db.storage.from(this.bucket).remove(keys);
     if (error) throw new Error(`BlobStore.delete failed: ${error.message}`);
+  }
+
+  async list(folder: string): Promise<string[]> {
+    const keys: string[] = [];
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+      const { data, error } = await this.db.storage
+        .from(this.bucket)
+        .list(folder, { limit: PAGE_SIZE, offset, sortBy: { column: "name", order: "asc" } });
+      if (error) throw new Error(`BlobStore.list(${folder}) failed: ${error.message}`);
+      // Sub-folders come back as entries without an id; only objects count.
+      for (const entry of data) if (entry.id) keys.push(`${folder}/${entry.name}`);
+      if (data.length < PAGE_SIZE) return keys;
+    }
   }
 }

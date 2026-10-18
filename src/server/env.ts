@@ -23,4 +23,7 @@ export const serverEnv = {
     }
     return secret;
   },
+  get adminPassword() {
+    return required("ADMIN_PASSWORD");
+  },
 };
