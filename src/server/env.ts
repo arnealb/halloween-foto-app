@@ -26,4 +26,11 @@ export const serverEnv = {
   get adminPassword() {
     return required("ADMIN_PASSWORD");
   },
+  /**
+   * Raw public base URL the QR codes point to; may be missing or wrong (the
+   * Admin warns about it, see `resolveJoinUrl`). Read it at request time only.
+   */
+  get publicBaseUrl(): string | undefined {
+    return process.env.PUBLIC_BASE_URL;
+  },
 };
