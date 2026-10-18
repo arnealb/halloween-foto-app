@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import type { HostPhoto } from "@/party-camera";
+import { photoFileName, type HostPhoto } from "@/party-camera";
 import { requireHost } from "@/server/host";
 import { Splash } from "../../../splash";
 import { countPhotos, formatHour, formatTime } from "../../format";
@@ -80,6 +80,7 @@ function toBrowserPhoto(photo: HostPhoto): BrowserPhoto {
     hidden: photo.hidden,
     width: photo.width,
     height: photo.height,
+    fileName: photoFileName(photo.guestName, photo.takenAt),
   };
 }
 

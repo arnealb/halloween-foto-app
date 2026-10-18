@@ -78,7 +78,12 @@ async function GalleryScreen({ searchParams }: Pick<PageProps<"/galerij">, "sear
   }
 
   const mine = params.van === "mij" && guest !== null;
-  const page = await camera.listGallery({ guestId: mine ? guest.id : undefined });
+  const [page, own] = await Promise.all([
+    camera.listGallery({ guestId: mine ? guest.id : undefined }),
+    // Whether the Gast has any photo in the Galerij (for the zip button).
+    guest && !mine ? camera.listGallery({ guestId: guest.id, limit: 1 }) : null,
+  ]);
+  const hasOwnPhotos = mine ? page.photos.length > 0 : (own?.photos.length ?? 0) > 0;
 
   return (
     <main style={style} className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-4 px-2 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(2rem,env(safe-area-inset-bottom))] sm:px-4">
@@ -106,6 +111,16 @@ async function GalleryScreen({ searchParams }: Pick<PageProps<"/galerij">, "sear
           </div>
           {guest && mine && (
             <span className="text-sm text-stone-400">Foto&apos;s van {guest.name}</span>
+          )}
+          {guest && hasOwnPhotos && (
+            // A plain link: the zip streams straight to the browser's downloads.
+            <a
+              href="/api/galerij/mijn-fotos"
+              download
+              className="rounded-full bg-stone-800 px-4 py-1.5 text-sm font-medium"
+            >
+              Download mijn foto&apos;s (zip)
+            </a>
           )}
         </nav>
       </header>

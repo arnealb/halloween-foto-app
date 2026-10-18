@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { deletePhotoAction, setPhotoHiddenAction } from "../../actions";
+import { PhotoActions } from "../../../photo-actions";
 import { adminPhotoUrl } from "../../photo-url";
 
 /** A photo as the grid needs it; everything preformatted on the server. */
@@ -13,6 +14,8 @@ export interface BrowserPhoto {
   hidden: boolean;
   width: number;
   height: number;
+  /** For a download: `<gast>_<tijdstip>.jpg`. */
+  fileName: string;
 }
 
 export interface BrowserSection {
@@ -284,24 +287,36 @@ function Lightbox({
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={toggleHidden}
-              disabled={pending}
-              className="h-12 rounded-xl bg-stone-800 font-medium disabled:opacity-60"
-            >
-              {pending ? "Bezig…" : photo.hidden ? "Weer tonen" : "Verbergen"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirming(true)}
-              disabled={pending}
-              className="h-12 rounded-xl bg-red-950 font-medium text-red-200 disabled:opacity-60"
-            >
-              Verwijderen
-            </button>
-          </div>
+          <>
+            <PhotoActions
+              fileName={photo.fileName}
+              // Phone-sized with the watermark, as Gasten share it (cached,
+              // unlike the full-size version the download buttons give).
+              shareUrl={adminPhotoUrl(photo.id, "display", { watermarked: true })}
+              downloads={[
+                { label: "Met watermark", href: adminPhotoUrl(photo.id, "shareable") },
+                { label: "Origineel", href: adminPhotoUrl(photo.id, "original") },
+              ]}
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={toggleHidden}
+                disabled={pending}
+                className="h-12 rounded-xl bg-stone-800 font-medium disabled:opacity-60"
+              >
+                {pending ? "Bezig…" : photo.hidden ? "Weer tonen" : "Verbergen"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirming(true)}
+                disabled={pending}
+                className="h-12 rounded-xl bg-red-950 font-medium text-red-200 disabled:opacity-60"
+              >
+                Verwijderen
+              </button>
+            </div>
+          </>
         )}
       </div>
     </div>

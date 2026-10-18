@@ -2,11 +2,12 @@ import type { NextRequest } from "next/server";
 import { isPartyCameraError, type GuestPhotoVariant } from "@/party-camera";
 import { partyCamera } from "@/server/party-camera";
 
-const VARIANTS: readonly GuestPhotoVariant[] = ["thumb", "display"];
+const VARIANTS: readonly GuestPhotoVariant[] = ["thumb", "display", "shareable"];
 
 /**
- * GET /api/galerij/:photoId/:variant — a photo of the Galerij (`thumb` or
- * `display`, never the original) for anyone with the link, only after the
+ * GET /api/galerij/:photoId/:variant — a photo of the Galerij (`thumb`,
+ * `display` or `shareable` (full size with the watermark, for downloading),
+ * never the original) for anyone with the link, only after the
  * Reveal and only if the Host has not hidden it. Before the Reveal, for a
  * hidden or unknown photo and for any other variant the answer is the same
  * 404, so nothing tells whether a photo exists.

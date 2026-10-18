@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { InvalidSettingsError, PartyCameraError, type SettingsFieldErrors } from "./errors";
+import {
+  EXPORT_PART_SIZE,
+  layoutFolders,
+  safeFileName,
+  splitIntoParts,
+  zipStream,
+  type ExportFolder,
+} from "./export";
 import { DISPLAY_LONG_SIDE, normalizeShot, renderDerived, type DerivedVariant } from "./image";
 import { revealStateOf, type RevealState } from "./reveal";
 import { effectiveChanges, validateSettingsUpdate } from "./settings";
@@ -113,22 +121,31 @@ export interface PartyCamera {
    *
    * For the Host (`asHost: true`): any photo, hidden ones included, also
    * before the Reveal, in every variant: `original` is the stored original
-   * byte for byte; `thumb` and `display` are clean (never watermarked).
+   * byte for byte; `thumb` and `display` are clean, unless `watermarked`
+   * asks for them as the Galerij shows them (e.g. to share the phone-sized
+   * version); `shareable` is what a Gast gets (see below).
    *
-   * For Gasten and everyone else (`asHost: false`): only `thumb` and
-   * `display`, never `original`; only after the Reveal and only photos that
-   * are not hidden. Before the Reveal, for a hidden photo, an unknown photo
-   * and any other variant the failure is the same, so nothing tells whether a
-   * photo exists.
+   * For Gasten and everyone else (`asHost: false`): only `thumb`, `display`
+   * and `shareable`, never `original`; only after the Reveal and only photos
+   * that are not hidden.
    *
-   * Derived variants are rendered once and cached in the blob store under
-   * `derived/<photoId>/<variant>-<renderKey>.jpg`.
+   * `shareable`: the photo at its full (original) resolution with the
+   * Galerij's watermark, for downloading, sharing and printing. With the
+   * watermark off it is the original's bytes as they are (see
+   * docs/adr/0001-shareable-without-watermark-is-original-bytes.md).
+   *
+   * Before the Reveal, for a hidden photo, an unknown photo and any other
+   * variant the failure is the same, so nothing tells whether a photo exists.
+   *
+   * `thumb` and `display` are rendered once and cached in the blob store
+   * under `derived/<photoId>/<variant>-<renderKey>.jpg`; `shareable` is
+   * rendered on every request (rarely asked, and big).
    * @throws PartyCameraError `UnknownPhoto`
    */
   renderPhoto(
     photoId: string,
     variant: PhotoVariant,
-    options: { asHost: true },
+    options: { asHost: true; watermarked?: boolean },
   ): Promise<RenderedPhoto>;
   renderPhoto(
     photoId: string,
@@ -254,6 +271,83 @@ export interface PartyCamera {
    * well within a serverless time limit.
    */
   prepareGallery(options?: { cursor?: string; limit?: number }): Promise<GalleryPreparation>;
+
+  /**
+   * A zip of photos, streamed (never held in memory): one folder per Gast
+   * (their name, made safe for any file system; Gasten with the same name get
+   * `Naam (2)`, ...), files `<gast>_<tijdstip>_<n>.jpg` with the moment in
+   * the party's time zone and `n` counting that Gast's photos (in this
+   * variant) oldest first. Photos are STOREd (JPEGs do not compress).
+   *
+   * - `original`: the stored originals byte for byte, hidden photos included
+   *   (the Host's archive).
+   * - `shareable`: the {@link renderPhoto} `shareable` versions (full
+   *   resolution, with the watermark), hidden photos left out.
+   *
+   * `guestId`: only that Gast's photos. `part` (1-based): only that part of
+   * the export as {@link planExport} lays it out, so an export too big for
+   * one request can be fetched in parts that together hold every photo
+   * exactly once. `signal`: abort to stop all work (e.g. the client left);
+   * cancelling the stream does the same.
+   *
+   * For a Gast (`asHost: false`): only their own photos (`guestId` is
+   * required: take it from their session, never from a request), always
+   * `shareable` whatever `variant` says, and only after the Reveal.
+   * @throws PartyCameraError `NotRevealed` (a Gast, before the Reveal),
+   *   `UnknownGuest`, `InvalidExportPart`
+   */
+  exportZip(options: ExportOptions, access: { asHost: true }): Promise<ZipExport>;
+  exportZip(
+    options: { guestId: string; variant?: "shareable"; signal?: AbortSignal },
+    access: { asHost: false },
+  ): Promise<ZipExport>;
+
+  /**
+   * How {@link exportZip} splits this export into parts of at most
+   * {@link EXPORT_PART_SIZE} photos: deterministic (same photos, same parts),
+   * a Gast's folder kept whole in one part unless it alone exceeds a part.
+   * @throws PartyCameraError `UnknownGuest`
+   */
+  planExport(options: { variant: ExportVariant; guestId?: string }): Promise<ExportPlan>;
+}
+
+/** What a zip export holds: the Host's archive, or the watermarked versions. */
+export type ExportVariant = "original" | "shareable";
+
+/** Options of {@link PartyCamera.exportZip} for the Host. */
+export interface ExportOptions {
+  variant: ExportVariant;
+  /** Only this Gast's photos. */
+  guestId?: string;
+  /** Only this part (1-based) of the export, see {@link PartyCamera.planExport}. */
+  part?: number;
+  /** Abort to stop the export (e.g. when the request is cancelled). */
+  signal?: AbortSignal;
+}
+
+/** A zip export, ready to stream. */
+export interface ZipExport {
+  stream: ReadableStream<Uint8Array>;
+  /** A sensible file name for the download, e.g. `feest-originelen-deel-2-van-5.zip`. */
+  filename: string;
+  photoCount: number;
+}
+
+/** Result of {@link PartyCamera.planExport}. */
+export interface ExportPlan {
+  variant: ExportVariant;
+  photoCount: number;
+  partSize: number;
+  parts: ExportPart[];
+}
+
+/** One part of a split export. */
+export interface ExportPart {
+  /** 1-based. */
+  part: number;
+  photoCount: number;
+  /** Names of the Gasten whose photos are (partly) in this part, in order. */
+  guestNames: string[];
 }
 
 /** Watermark fields to preview (see {@link PartyCamera.previewWatermark}). */
@@ -423,8 +517,15 @@ function galleryLook(settings: WatermarkSettings): Look {
  */
 const WATERMARK_RENDER_VERSION = 1;
 
+/**
+ * How often a Gast's zip export checks that the Galerij is still open while
+ * it streams: often enough that closing it stops the download within
+ * seconds, without a settings query per photo.
+ */
+const REVEAL_RECHECK_MS = 5_000;
+
 /** Derived images of a watermark: `<variant>-wm-<hash>.jpg`. */
-const WATERMARKED_KEY_RE = /\/(?:thumb|display)-(wm-[0-9a-f]{12})\.jpg$/;
+const WATERMARKED_KEY_RE = /\/(?:thumb|display|shareable)-(wm-[0-9a-f]{12})\.jpg$/;
 
 /**
  * Render key of the Galerij's derived images, from the settings they are
@@ -901,7 +1002,7 @@ class DefaultPartyCamera implements PartyCamera {
   async renderPhoto(
     photoId: string,
     variant: PhotoVariant,
-    options: { asHost: boolean },
+    options: { asHost: boolean; watermarked?: boolean },
   ): Promise<RenderedPhoto> {
     if (options?.asHost === true) {
       const photo = await this.findPhoto(photoId);
@@ -909,7 +1010,13 @@ class DefaultPartyCamera implements PartyCamera {
         return { bytes: await this.readOriginal(photo), contentType: "image/jpeg" };
       }
       if (!isDerivedVariant(variant)) throw unknownPhoto();
-      return this.renderDerivedPhoto(photo, variant, PLAIN);
+      // The Host's own views are clean unless asked otherwise; `shareable`
+      // is what everyone gets.
+      const look =
+        variant === "shareable" || options.watermarked === true
+          ? galleryLook(await this.repository.getSettings())
+          : PLAIN;
+      return this.renderDerivedPhoto(photo, variant, look);
     }
 
     // Everyone else. Checked at runtime too, for untyped callers: anything
@@ -925,25 +1032,37 @@ class DefaultPartyCamera implements PartyCamera {
     return this.renderDerivedPhoto(photo, variant, galleryLook(settings));
   }
 
+  /**
+   * A derived image: from the cache, else rendered and cached. The full-size
+   * `shareable` version is never cached: it is fetched rarely (a download, a
+   * zip export), and storing ~1.5 MB per photo would double the storage and
+   * let anyone with the Galerij link fill it.
+   */
   private async renderDerivedPhoto(
     photo: Photo,
     variant: DerivedVariant,
     look: Look,
   ): Promise<RenderedPhoto> {
+    const store = variant !== "shareable";
+    // Without a watermark, the full-size shareable photo IS the original:
+    // served as it is, not re-encoded or stored twice.
+    if (variant === "shareable" && look.key === PLAIN.key) {
+      return { bytes: await this.readOriginal(photo), contentType: "image/jpeg" };
+    }
     const key = derivedKey(photo.id, variant, look.key);
     // One render per key at a time in this process: concurrent requests for
     // the same image (everyone opening the Galerij at the Reveal) share it.
     const inFlight = this.rendering.get(key);
     if (inFlight) return inFlight;
     const render = (async (): Promise<RenderedPhoto> => {
-      const cached = await this.blobStore.get(key);
+      const cached = store ? await this.blobStore.get(key) : null;
       if (cached) return { bytes: cached, contentType: "image/jpeg" };
       const [original, watermark] = await Promise.all([
         this.readOriginal(photo),
         this.watermarkSpec(look),
       ]);
       const bytes = await renderDerived(original, variant, watermark);
-      await this.cacheDerived(photo.id, key, bytes);
+      if (store) await this.cacheDerived(photo.id, key, bytes);
       return { bytes, contentType: "image/jpeg" };
     })();
     this.rendering.set(key, render);
@@ -967,6 +1086,119 @@ class DefaultPartyCamera implements PartyCamera {
     if (look.key !== PLAIN.key) {
       await this.renderDerivedPhoto(photo, "thumb", PLAIN);
     }
+  }
+
+  exportZip(options: ExportOptions, access: { asHost: true }): Promise<ZipExport>;
+  exportZip(
+    options: { guestId: string; variant?: "shareable"; signal?: AbortSignal },
+    access: { asHost: false },
+  ): Promise<ZipExport>;
+  async exportZip(
+    options: Partial<ExportOptions>,
+    access: { asHost: boolean },
+  ): Promise<ZipExport> {
+    const asHost = access?.asHost === true;
+    if (!asHost) {
+      await this.requireRevealed();
+      // A Gast only ever gets their own photos (the guestId is required),
+      // only the watermarked versions, and the export as a whole.
+      if (typeof options?.guestId !== "string") throw unknownGuest();
+    }
+    const variant: ExportVariant = asHost && options.variant === "original" ? "original" : "shareable";
+    if (asHost && options.variant !== "original" && options.variant !== "shareable") {
+      throw new PartyCameraError("InvalidExportPart", "Onbekende soort download.");
+    }
+    const { settings, folders } = await this.exportFolders(variant, options.guestId);
+    const parts = splitIntoParts(folders, EXPORT_PART_SIZE[variant]);
+    let selected = folders;
+    let partLabel = "";
+    if (asHost && options.part !== undefined) {
+      const part = options.part;
+      if (!Number.isInteger(part) || part < 1 || part > parts.length) {
+        throw new PartyCameraError("InvalidExportPart", "Dit deel van de download bestaat niet.");
+      }
+      selected = parts[part - 1];
+      partLabel = `-deel-${part}-van-${parts.length}`;
+    }
+
+    const look = galleryLook(settings);
+    const sources = selected.flatMap((folder) =>
+      folder.entries.map(({ photo, path }) => ({
+        path,
+        takenAt: photo.takenAt,
+        read: async () =>
+          variant === "original"
+            ? this.readOriginal(photo)
+            : (await this.renderDerivedPhoto(photo, "shareable", look)).bytes,
+      })),
+    );
+    // A Gast's export stops (the download fails) as soon as the Galerij is
+    // closed again, checked between photos at most every few seconds.
+    let checkedAt = this.clock.now().getTime();
+    const guard = asHost
+      ? undefined
+      : async () => {
+          const now = this.clock.now().getTime();
+          if (now - checkedAt < REVEAL_RECHECK_MS) return;
+          checkedAt = now;
+          await this.requireRevealed();
+        };
+    const who = options.guestId !== undefined && folders[0] ? `-${folders[0].folder}` : "";
+    const title = safeFileName(settings.title);
+    const what = variant === "original" ? "originelen" : "fotos";
+    return {
+      stream: zipStream(sources, { signal: options.signal, guard }),
+      filename: `${title}${who}-${what}${partLabel}.zip`.replace(/\s+/g, "-"),
+      photoCount: sources.length,
+    };
+  }
+
+  async planExport({
+    variant,
+    guestId,
+  }: {
+    variant: ExportVariant;
+    guestId?: string;
+  }): Promise<ExportPlan> {
+    const v: ExportVariant = variant === "original" ? "original" : "shareable";
+    const { folders } = await this.exportFolders(v, guestId);
+    const parts = splitIntoParts(folders, EXPORT_PART_SIZE[v]);
+    return {
+      variant: v,
+      photoCount: folders.reduce((sum, folder) => sum + folder.entries.length, 0),
+      partSize: EXPORT_PART_SIZE[v],
+      parts: parts.map((part, index) => ({
+        part: index + 1,
+        photoCount: part.reduce((sum, folder) => sum + folder.entries.length, 0),
+        guestNames: [...new Set(part.map((folder) => folder.guestName))],
+      })),
+    };
+  }
+
+  /**
+   * The photos of an export laid out in folders. Folder names are computed
+   * over the whole party, so a Gast's folder is the same in every export.
+   */
+  private async exportFolders(
+    variant: ExportVariant,
+    guestId: string | undefined,
+  ): Promise<{ settings: EventSettings; folders: ExportFolder<Photo>[] }> {
+    const [settings, guests, photos] = await Promise.all([
+      this.repository.getSettings(),
+      this.repository.listGuests(),
+      this.repository.listPhotos(),
+    ]);
+    const seen = new Set<string>();
+    const included = photos.filter((photo) => {
+      if (seen.has(photo.id) || (variant === "shareable" && photo.hidden)) return false;
+      seen.add(photo.id);
+      return true;
+    });
+    const folders = layoutFolders(guests, included);
+    if (guestId === undefined) return { settings, folders };
+    const id = isShotId(guestId) ? guestId.toLowerCase() : null;
+    if (!id || !guests.some((guest) => guest.id === id)) throw unknownGuest();
+    return { settings, folders: folders.filter((folder) => folder.guestId === id) };
   }
 
   /**
@@ -1145,12 +1377,16 @@ function normalizeGuestName(raw: unknown): string {
   return name;
 }
 
+function unknownGuest(): PartyCameraError {
+  return new PartyCameraError("UnknownGuest", "Deze gast bestaat niet.");
+}
+
 function unknownPhoto(): PartyCameraError {
   return new PartyCameraError("UnknownPhoto", "Deze foto bestaat niet (meer).");
 }
 
 function isDerivedVariant(value: unknown): value is DerivedVariant {
-  return value === "thumb" || value === "display";
+  return value === "thumb" || value === "display" || value === "shareable";
 }
 
 /** Galerij cursor: the (takenAt, id) of a page's last photo, opaque to callers. */

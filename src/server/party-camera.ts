@@ -3,6 +3,7 @@ import "server-only";
 import { createClient } from "@supabase/supabase-js";
 import {
   createPartyCamera,
+  type ZipExport,
   systemClock,
   type GuestPhotoVariant,
   type PartyCamera,
@@ -27,11 +28,15 @@ type HostOperation =
   | "setRevealOverride"
   | "previewWatermark"
   | "prepareGallery"
-  | "renderPhoto";
+  | "renderPhoto"
+  | "exportZip"
+  | "planExport";
 
 /**
  * What anyone (Gasten, the join page, the Galerij) may call, without an admin
- * session. `renderPhoto` only as a guest: `thumb`/`display`, after the Reveal.
+ * session. `renderPhoto` only as a guest: `thumb`/`display`/`shareable`,
+ * after the Reveal. `exportZip` only as a guest: their own photos (pass the
+ * guestId from the guest cookie), `shareable`, after the Reveal.
  */
 export type PublicPartyCamera = Omit<PartyCamera, HostOperation> & {
   renderPhoto(
@@ -39,6 +44,7 @@ export type PublicPartyCamera = Omit<PartyCamera, HostOperation> & {
     variant: GuestPhotoVariant,
     options: { asHost: false },
   ): Promise<RenderedPhoto>;
+  exportZip(options: { guestId: string; signal?: AbortSignal }): Promise<ZipExport>;
 };
 
 /** Everything, for a request with a verified admin session. */
@@ -80,6 +86,8 @@ export function partyCamera(): PublicPartyCamera {
       listGallery: (options) => camera.listGallery(options),
       renderPhoto: (photoId, variant) => camera.renderPhoto(photoId, variant, { asHost: false }),
       prepareDerivatives: (photoId) => camera.prepareDerivatives(photoId),
+      exportZip: ({ guestId, signal }) =>
+        camera.exportZip({ guestId, signal, variant: "shareable" }, { asHost: false }),
     };
   }
   return publicInstance;

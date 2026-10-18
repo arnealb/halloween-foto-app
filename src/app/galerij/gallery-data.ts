@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { GalleryPage } from "@/party-camera";
+import { photoFileName, type GalleryPage } from "@/party-camera";
 import { formatPartyTime } from "../party-time";
 
 /** A Galerij photo as the client needs it; everything preformatted on the server. */
@@ -11,6 +11,8 @@ export interface ViewPhoto {
   time: string;
   width: number;
   height: number;
+  /** For a download: `<gast>_<tijdstip>.jpg`. */
+  fileName: string;
 }
 
 export interface ViewPage {
@@ -26,6 +28,7 @@ export function toViewPage(page: GalleryPage): ViewPage {
       time: formatPartyTime(photo.takenAt),
       width: photo.width,
       height: photo.height,
+      fileName: photoFileName(photo.guestName, photo.takenAt),
     })),
     nextCursor: page.nextCursor,
   };
