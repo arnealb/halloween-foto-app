@@ -6,6 +6,7 @@ import {
 } from "@/party-camera";
 import { currentGuestId } from "@/server/guest-session";
 import { partyCamera } from "@/server/party-camera";
+import { isSameOrigin, readBody } from "@/server/request";
 import { SHOT_ID_HEADER, type ShotResponse } from "@/app/camera/shot-response";
 
 /**
@@ -90,51 +91,4 @@ function reply(
     status,
     headers: { "Cache-Control": "no-store", ...headers },
   });
-}
-
-/**
- * Reject cross-site requests. The guest cookie is SameSite=Lax (so it is not
- * sent on cross-site POSTs anyway); this is defense in depth.
- */
-function isSameOrigin(request: NextRequest): boolean {
-  if (request.headers.get("sec-fetch-site") === "cross-site") return false;
-  const origin = request.headers.get("origin");
-  if (!origin) return true;
-  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
-  try {
-    return new URL(origin).host === host;
-  } catch {
-    return false;
-  }
-}
-
-/** Read the body, but stop as soon as it exceeds `limit` bytes. */
-async function readBody(
-  request: NextRequest,
-  limit: number,
-): Promise<Uint8Array | "too-large"> {
-  const declared = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > limit) return "too-large";
-  if (!request.body) return new Uint8Array();
-
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > limit) {
-      await reader.cancel();
-      return "too-large";
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
 }

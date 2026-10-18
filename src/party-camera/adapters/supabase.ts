@@ -142,10 +142,15 @@ function toSettings(row: EventSettingsRow): EventSettings {
     watermarkText: row.watermark_text,
     watermarkLogoKey: row.watermark_logo_key,
     watermarkPosition: row.watermark_position,
-    watermarkScale: Number(row.watermark_scale),
-    watermarkOpacity: Number(row.watermark_opacity),
+    // `real` columns: round off float4 noise (0.3 -> 0.30000001192...).
+    watermarkScale: roundSetting(row.watermark_scale),
+    watermarkOpacity: roundSetting(row.watermark_opacity),
     settingsVersion: row.settings_version,
   };
+}
+
+function roundSetting(value: number | string): number {
+  return Math.round(Number(value) * 1000) / 1000;
 }
 
 /** Column names of the settings fields, for `update_event_settings`. */

@@ -8,6 +8,7 @@ const SECTIONS = [
   { href: "/admin", label: "Overzicht" },
   { href: "/admin/fotos", label: "Foto's" },
   { href: "/admin/instellingen", label: "Instellingen" },
+  { href: "/admin/watermark", label: "Watermark" },
 ] as const;
 
 export function AdminNav() {

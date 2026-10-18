@@ -16,6 +16,8 @@ import type { SettingsUpdate } from "./types";
  * - `NotRevealed`: the Galerij is asked for before the Reveal.
  * - `SettingsChanged`: a settings update based on an older settings version
  *   (changed elsewhere in the meantime); nothing changed. Reload and retry.
+ * - `PreviewSuperseded`: a watermark preview overtaken by a newer request
+ *   while it waited for its turn; nothing was rendered.
  * - `InvalidSettings`: a settings update with invalid values; nothing changed.
  *   Thrown as {@link InvalidSettingsError}, which says what is wrong per field.
  */
@@ -30,7 +32,8 @@ export type PartyCameraErrorCode =
   | "CaptureClosed"
   | "NotRevealed"
   | "InvalidSettings"
-  | "SettingsChanged";
+  | "SettingsChanged"
+  | "PreviewSuperseded";
 
 export class PartyCameraError extends Error {
   readonly code: PartyCameraErrorCode;

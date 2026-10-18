@@ -1,5 +1,11 @@
 import { InvalidSettingsError, type SettingsFieldErrors } from "./errors";
-import type { EventSettings, RevealOverride, SettingsChanges, SettingsUpdate } from "./types";
+import type {
+  EventSettings,
+  RevealOverride,
+  SettingsChanges,
+  SettingsUpdate,
+  WatermarkPosition,
+} from "./types";
 
 /** Longest Event title (after trimming). Keep in sync with migration 0007. */
 export const MAX_TITLE_LENGTH = 60;
@@ -7,6 +13,25 @@ export const MAX_TITLE_LENGTH = 60;
 export const MAX_WELCOME_TEXT_LENGTH = 500;
 /** Largest Rolletje the Host can set. Keep in sync with migration 0007. */
 export const MAX_SHOTS_PER_GUEST = 500;
+
+/** Longest watermark text (after trimming). Keep in sync with migration 0010. */
+export const MAX_WATERMARK_TEXT_LENGTH = 60;
+/**
+ * Range of the watermark width relative to the photo width (5% to 60%).
+ * Keep in sync with migration 0010.
+ */
+export const MIN_WATERMARK_SCALE = 0.05;
+export const MAX_WATERMARK_SCALE = 0.6;
+/** Range of the watermark opacity (10% to 100%). Keep in sync with migration 0010. */
+export const MIN_WATERMARK_OPACITY = 0.1;
+export const MAX_WATERMARK_OPACITY = 1;
+
+export const WATERMARK_POSITIONS: readonly WatermarkPosition[] = [
+  "top-left",
+  "top-right",
+  "bottom-left",
+  "bottom-right",
+];
 
 /**
  * An accent color: exactly `#rrggbb`. Strict on purpose: the value is written
@@ -97,8 +122,57 @@ export function validateSettingsUpdate(update: SettingsUpdate): SettingsChanges 
     } else changes.revealOverride = update.revealOverride;
   }
 
+  if (update.watermarkEnabled !== undefined) {
+    if (typeof update.watermarkEnabled !== "boolean") {
+      errors.watermarkEnabled = "Ongeldige keuze voor het watermark.";
+    } else changes.watermarkEnabled = update.watermarkEnabled;
+  }
+
+  if (update.watermarkText !== undefined) {
+    if (typeof update.watermarkText !== "string") {
+      errors.watermarkText = "Ongeldige watermarktekst.";
+    } else {
+      // One line: control characters and runs of whitespace become one space.
+      const text = update.watermarkText.replace(/[\u0000-\u001f\u007f\s]+/g, " ").trim();
+      if ([...text].length > MAX_WATERMARK_TEXT_LENGTH) {
+        errors.watermarkText = `De watermarktekst mag maximaal ${MAX_WATERMARK_TEXT_LENGTH} tekens lang zijn.`;
+      } else changes.watermarkText = text;
+    }
+  }
+
+  if (update.watermarkPosition !== undefined) {
+    if (!WATERMARK_POSITIONS.includes(update.watermarkPosition)) {
+      errors.watermarkPosition = "Kies een van de vier hoeken.";
+    } else changes.watermarkPosition = update.watermarkPosition;
+  }
+
+  if (update.watermarkScale !== undefined) {
+    const scale = inRange(update.watermarkScale, MIN_WATERMARK_SCALE, MAX_WATERMARK_SCALE);
+    if (scale === null) {
+      errors.watermarkScale = `Kies een grootte van ${percent(MIN_WATERMARK_SCALE)} tot en met ${percent(MAX_WATERMARK_SCALE)}.`;
+    } else changes.watermarkScale = scale;
+  }
+
+  if (update.watermarkOpacity !== undefined) {
+    const opacity = inRange(update.watermarkOpacity, MIN_WATERMARK_OPACITY, MAX_WATERMARK_OPACITY);
+    if (opacity === null) {
+      errors.watermarkOpacity = `Kies een zichtbaarheid van ${percent(MIN_WATERMARK_OPACITY)} tot en met ${percent(MAX_WATERMARK_OPACITY)}.`;
+    } else changes.watermarkOpacity = opacity;
+  }
+
   if (Object.keys(errors).length > 0) throw new InvalidSettingsError(errors);
   return changes;
+}
+
+/** `value` rounded to 3 decimals if it is a number in [min, max], else null. */
+function inRange(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const rounded = Math.round(value * 1000) / 1000;
+  return rounded >= min && rounded <= max ? rounded : null;
+}
+
+function percent(fraction: number): string {
+  return `${Math.round(fraction * 100)}%`;
 }
 
 /** The changes that actually differ from the current settings. */
